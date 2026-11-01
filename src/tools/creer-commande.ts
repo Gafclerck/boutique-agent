@@ -1,16 +1,61 @@
-import type { Shop } from '../domain/shop.js';
+import type {
+  OrderFailureReason,
+  OrderInput,
+  OrderPreview,
+  Shop,
+} from '../domain/shop.js';
 import type { ToolDefinition } from '../ports/llm-client.js';
-import type { Tool } from './types.js';
+import type { Tool, ToolApprovalPreparation } from './types.js';
 
-/**
- * PALIER 1 DESIGN NOTE:
- * In Palier 1, human validation by Afi is deliberately omitted (planned for Palier 2).
- * The order is directly registered and stock decremented once the client explicitly confirms.
- */
+function formatFailure(result: OrderFailureReason): Record<string, unknown> {
+  switch (result.reason) {
+    case 'UNSERVICED_ZONE':
+      return {
+        erreur: 'zone non desservie',
+        zones_desservies: [...result.zones_desservies],
+      };
+    case 'UNKNOWN_REFERENCE':
+      return {
+        erreur: 'référence inconnue',
+        conseil: 'utiliser chercher_produits pour trouver la bonne référence',
+      };
+    case 'INSUFFICIENT_STOCK':
+      return {
+        erreur: result.message,
+        stock_disponible: result.stock_disponible,
+      };
+    case 'INVALID_INPUT':
+      return {
+        erreur: result.message,
+        conseil: 'vérifier les informations transmises pour la commande',
+      };
+  }
+}
+
+function formatRecapitulatif(preview: OrderPreview): string {
+  const articlesLines = preview.articles
+    .map(
+      (a) =>
+        `  - ${a.nom} (${a.ref}) x ${a.quantite} : ${a.sous_total_fcfa.toLocaleString('fr-FR')} FCFA`,
+    )
+    .join('\n');
+
+  return [
+    '=== Récapitulatif de la commande ===',
+    `Client : ${preview.client_nom}`,
+    `Articles :\n${articlesLines}`,
+    `Zone de livraison : ${preview.zone}`,
+    `Frais de livraison : ${preview.frais_livraison_fcfa.toLocaleString('fr-FR')} FCFA`,
+    `Total : ${preview.total_fcfa.toLocaleString('fr-FR')} FCFA`,
+    '====================================',
+  ].join('\n');
+}
+
 export class CreerCommandeTool implements Tool {
   public readonly name = 'creer_commande';
   public readonly description =
-    'Enregistre définitivement une commande (action IRREVERSIBLE : décrémente le stock). À appeler UNIQUEMENT après que le client a confirmé explicitement un récapitulatif complet (articles, quantités, zone, total). Ne jamais l\'appeler pour un simple devis.';
+    'Enregistre définitivement une commande (action IRREVERSIBLE : décrémente le stock). Requiert une validation préalable. À appeler UNIQUEMENT après confirmation explicite du client. Ne jamais l\'appeler pour un simple devis.';
+  public readonly requiresApproval = true;
 
   public readonly parameters = {
     type: 'object',
@@ -48,7 +93,9 @@ export class CreerCommandeTool implements Tool {
 
   constructor(private readonly shop: Shop) {}
 
-  public async execute(args: unknown): Promise<Record<string, unknown>> {
+  private parseArguments(args: unknown):
+    | { readonly success: true; readonly params: OrderInput }
+    | { readonly success: false; readonly error: Record<string, unknown> } {
     if (
       typeof args !== 'object' ||
       args === null ||
@@ -57,9 +104,12 @@ export class CreerCommandeTool implements Tool {
       !('articles' in args)
     ) {
       return {
-        erreur: 'argument invalide',
-        conseil:
-          'fournir client_nom, zone et articles sous la forme {"client_nom": "...", "zone": "...", "articles": [{"ref": "P01", "quantite": 1}]}',
+        success: false,
+        error: {
+          erreur: 'argument invalide',
+          conseil:
+            'fournir client_nom, zone et articles sous la forme {"client_nom": "...", "zone": "...", "articles": [{"ref": "P01", "quantite": 1}]}',
+        },
       };
     }
 
@@ -78,9 +128,12 @@ export class CreerCommandeTool implements Tool {
       articles.length === 0
     ) {
       return {
-        erreur: 'argument invalide',
-        conseil:
-          'vérifier que client_nom et zone sont des chaînes non vides et que articles contient au moins un élément',
+        success: false,
+        error: {
+          erreur: 'argument invalide',
+          conseil:
+            'vérifier que client_nom et zone sont des chaînes non vides et que articles contient au moins un élément',
+        },
       };
     }
 
@@ -93,9 +146,12 @@ export class CreerCommandeTool implements Tool {
         typeof (item as { quantite?: unknown }).quantite !== 'number'
       ) {
         return {
-          erreur: 'argument invalide',
-          conseil:
-            'chaque article doit avoir une référence (ref) et une quantité entière positive (quantite)',
+          success: false,
+          error: {
+            erreur: 'argument invalide',
+            conseil:
+              'chaque article doit avoir une référence (ref) et une quantité entière positive (quantite)',
+          },
         };
       }
       parsedArticles.push({
@@ -104,35 +160,60 @@ export class CreerCommandeTool implements Tool {
       });
     }
 
-    const result = await this.shop.placeOrder({
-      clientNom: client_nom,
-      zone,
-      articles: parsedArticles,
-    });
+    return {
+      success: true,
+      params: {
+        clientNom: client_nom,
+        client_nom: client_nom,
+        zone,
+        articles: parsedArticles,
+      },
+    };
+  }
 
+  public async prepareApproval(
+    args: unknown,
+  ): Promise<ToolApprovalPreparation> {
+    const parsed = this.parseArguments(args);
+    if (!parsed.success) {
+      return { valid: false, errorResult: parsed.error };
+    }
+
+    const previewResult = await this.shop.previewOrder(parsed.params);
+    if (!previewResult.success) {
+      return {
+        valid: false,
+        errorResult: formatFailure(previewResult),
+      };
+    }
+
+    const recap = formatRecapitulatif(previewResult.preview);
+
+    return {
+      valid: true,
+      request: {
+        toolName: this.name,
+        recapitulatif: recap,
+        details: {
+          client_nom: previewResult.preview.client_nom,
+          zone: previewResult.preview.zone,
+          articles: previewResult.preview.articles,
+          frais_livraison_fcfa: previewResult.preview.frais_livraison_fcfa,
+          total_fcfa: previewResult.preview.total_fcfa,
+        },
+      },
+    };
+  }
+
+  public async execute(args: unknown): Promise<Record<string, unknown>> {
+    const parsed = this.parseArguments(args);
+    if (!parsed.success) {
+      return parsed.error;
+    }
+
+    const result = await this.shop.placeOrder(parsed.params);
     if (!result.success) {
-      switch (result.reason) {
-        case 'UNSERVICED_ZONE':
-          return {
-            erreur: 'zone non desservie',
-            zones_desservies: [...result.zones_desservies],
-          };
-        case 'UNKNOWN_REFERENCE':
-          return {
-            erreur: 'référence inconnue',
-            conseil: 'utiliser chercher_produits pour trouver la bonne référence',
-          };
-        case 'INSUFFICIENT_STOCK':
-          return {
-            erreur: result.message,
-            stock_disponible: result.stock_disponible,
-          };
-        case 'INVALID_INPUT':
-          return {
-            erreur: result.message,
-            conseil: 'vérifier les informations transmises pour la commande',
-          };
-      }
+      return formatFailure(result);
     }
 
     const order = result.order;
