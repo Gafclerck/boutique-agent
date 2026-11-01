@@ -6,6 +6,7 @@
   "scripts": {
     "start": "tsx src/entrypoints/cli.ts",
     "ask": "tsx src/entrypoints/cli.ts",
+    "live": "tsx scripts/live-check.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
