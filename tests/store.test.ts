@@ -139,6 +139,46 @@ describe('ShopStore Contract Tests', () => {
         const finalState = await store.readState();
         expect(finalState.prochain_numero).toBe(3);
       });
+
+      it('sérialisation : 20 transactions concurrentes ne perdent aucune mise à jour', async () => {
+        const promises = Array.from({ length: 20 }, (_, i) =>
+          store.transact((state) => {
+            state.prochain_numero = (state.prochain_numero ?? 1) + 1;
+            return i;
+          }),
+        );
+
+        const results = await Promise.all(promises);
+        expect(results).toHaveLength(20);
+
+        const finalState = await store.readState();
+        expect(finalState.prochain_numero).toBe(21);
+      });
+
+      it('résilience : une transaction qui échoue ne bloque pas la file', async () => {
+        const results: string[] = [];
+
+        const tx1 = store.transact(() => {
+          results.push('tx1');
+          return 'ok1';
+        });
+
+        const txFail = store.transact(() => {
+          results.push('txFail');
+          throw new Error('erreur transaction');
+        });
+
+        const tx2 = store.transact(() => {
+          results.push('tx2');
+          return 'ok2';
+        });
+
+        await expect(tx1).resolves.toBe('ok1');
+        await expect(txFail).rejects.toThrow('erreur transaction');
+        await expect(tx2).resolves.toBe('ok2');
+
+        expect(results).toEqual(['tx1', 'txFail', 'tx2']);
+      });
     });
   }
 
