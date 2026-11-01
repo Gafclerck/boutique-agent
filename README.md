@@ -119,13 +119,21 @@ TEMPERATURE=0
   ```bash
   npm run ask "Vous avez des pagnes ?"
   ```
-- **Tests unitaires et d'intégration** :
+- **Tests unitaires et de conformité (FakeLlm déterministe, coût nul)** :
   ```bash
   npm test
   ```
 - **Vérification des types TypeScript** :
   ```bash
   npm run typecheck
+  ```
+- **Vérification live plafonnée (opt-in sécurisé)** :
+  ```bash
+  # Simulation sans appel réseau (contrôle du plan et des quotas)
+  LIVE=1 npm run live -- --dry-run
+
+  # Exécution ciblée plafonnée sur l'API Rodium AI
+  LIVE=1 npm run live -- --scenarios S1,S3 --runs 1 --max-llm-calls 10
   ```
 
 ---
@@ -231,3 +239,35 @@ npm run ask "Livrez-moi à Lomé."
 npm run ask "C'est combien le sac en raphia ?"
 ```
 La trace s'affiche directement sur la sortie standard avant la réponse de l'agent.
+
+---
+
+## 8. Stratégie de test et budget
+
+### 8.1 La pyramide de tests
+Pour garantir la robustesse de l'agent sans épuiser de crédits API, le projet met en œuvre une pyramide de tests équilibrée à deux niveaux :
+
+1. **Tests déterministes gratuits par défaut (socle de la pyramide)** :
+   - Tous les tests de domaine, d'outils, de boucle d'agent et de conformité de scénarios (`npm test`) s'exécutent exclusivement à l'aide de simulations scriptées via `FakeLlm`.
+   - Exécution 100 % locale, reproductible, instantanée, sans dépendance réseau et à coût strictement nul (0 $ / 0 RODI).
+   - Ces tests couvrent à la fois les parcours conformes nominaux et les échecs réels documentés (recherche absente, omission de `verifier_stock`, rupture annoncée sans alternative vérifiée, etc.).
+2. **Tests live opt-in plafonnés (sommet de la pyramide)** :
+   - Le script `scripts/live-check.ts` (accessible via `npm run live`) est réservé à des campagnes d'évaluation ciblées face à de vrais modèles de langage distants.
+   - Ce mode est verrouillé par des gardes-fous stricts : refus catégorique d'exécution sans `LIVE=1`, calcul préalable du plan d'appels, plafond dur de requêtes (`--max-llm-calls`), lecture préventive du solde `/wallet` et mode simulation `--dry-run`.
+
+### 8.2 Règle stricte : aucun appel réel hors `npm run live`
+La commande standard `npm test` ainsi que la validation de types TypeScript `npm run typecheck` ne déclenchent **aucun appel réel** au LLM ni aucune requête payante. Les appels réels sont restreints exclusivement à l'invocation explicite de `npm run live` sous l'aval du flag d'environnement `LIVE=1`.
+
+### 8.3 Règle des trois et représentativité statistique
+Une série de 5 essais consécutifs sans échec ne suffit pas à garantir statistiquement un taux de réussite élevé :
+- En statistique (règle des trois pour un intervalle de confiance à 95 %), lorsque l'on observe $0$ échec sur un échantillon de $n$ essais indépendants, la borne supérieure du taux d'échec réel $p$ est estimée à :
+  $$p \approx \frac{3}{n}$$
+- Avec **5 essais sans échec** ($n = 5$), le taux d'échec réel peut encore culminer jusqu'à $3 / 5 = 60\,\%$.
+- Pour pouvoir certifier avec 95 % de confiance statistique un taux d'échec inférieur à **5 %** ($p < 0{,}05$), il faudrait observer au bas mot **60 essais consécutifs sans aucun échec** ($3 / 60 = 0{,}05$).
+- L'évaluation par tests déterministes sur des exécutions scriptées permet précisément de valider les règles de contrôle et de décision sans devoir financer 60 appels réels au LLM par scénario.
+
+### 8.4 Optimisation du budget de tokens (instructions et descriptions d'outils)
+Dans le patron d'agent autonome Penser-Agir-Observer, le modèle est consulté à chaque étape de la boucle de décision (`callModel`) :
+- À chaque tour de boucle, l'intégralité du prompt système (`SYSTEM_INSTRUCTIONS`) ainsi que la totalité des définitions JSON Schema de tous les outils déclarés (`ToolDefinition[]`) sont renvoyées en entrée du modèle.
+- Une consigne verbeuse ou des descriptions d'outils démesurées gonflent de manière exponentielle les tokens de prompt consommés à chaque étape.
+- **Conseil d'optimisation budgétaire** : limiter au strict nécessaire la taille des instructions et des descriptions d'outils (sans bavardage inutile) afin de minimiser le coût unitaire de chaque tour de boucle et de maximiser l'autonomie de l'agent dans les limites de crédits imparties.
