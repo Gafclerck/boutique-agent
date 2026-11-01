@@ -1,5 +1,6 @@
 import type { Shop } from '../domain/shop.js';
 import type { ToolDefinition } from '../ports/llm-client.js';
+import { CalculerTotalTool } from './calculer-total.js';
 import { ChercherProduitsTool } from './chercher-produits.js';
 import { ConvertirDeviseTool } from './convertir-devise.js';
 import { CreerCommandeTool } from './creer-commande.js';
@@ -37,6 +38,7 @@ export function createDefaultRegistry(
   registry.register(new VerifierStockTool(shop));
   registry.register(new FraisLivraisonTool(shop));
   registry.register(new ConvertirDeviseTool(fetchFn));
+  registry.register(new CalculerTotalTool(shop));
   registry.register(new CreerCommandeTool(shop));
 
   return registry;

@@ -1,3 +1,5 @@
+import { CalculerTotalTool } from '../src/tools/calculer-total.js';
+import { createDefaultRegistry } from '../src/tools/registry.js';
 import { describe, expect, it } from 'vitest';
 import { CANONICAL_ZONE_NAMES } from '../src/domain/catalogue.js';
 import { Shop } from '../src/domain/shop.js';
@@ -412,5 +414,126 @@ describe('Tool - creer_commande', () => {
       erreur: 'zone non desservie',
       zones_desservies: [...CANONICAL_ZONE_NAMES],
     });
+  });
+});
+
+describe('Tool - calculer_total', () => {
+  it('is registered in default registry', () => {
+    const shop = new Shop();
+    const registry = createDefaultRegistry(shop);
+    const tool = registry.get('calculer_total');
+    expect(tool).toBeDefined();
+    expect(tool).toBeInstanceOf(CalculerTotalTool);
+  });
+
+  it('succès : 2 robes à Calavi = 46 000 FCFA', async () => {
+    const shop = new Shop();
+    const tool = new CalculerTotalTool(shop);
+
+    const result = await tool.execute({
+      zone: 'Calavi',
+      articles: [{ ref: 'P05', quantite: 2 }],
+    });
+
+    expect(result).toEqual({
+      zone: 'Calavi',
+      articles: [
+        {
+          ref: 'P05',
+          nom: 'Robe en wax',
+          quantite: 2,
+          prix_unitaire_fcfa: 22000,
+          sous_total_fcfa: 44000,
+        },
+      ],
+      sous_total_articles_fcfa: 44000,
+      frais_livraison_fcfa: 2000,
+      total_fcfa: 46000,
+      delai: '24 à 48 h',
+    });
+  });
+
+  it('succès : 3 beurres à Porto-Novo = 13 500 FCFA', async () => {
+    const shop = new Shop();
+    const tool = new CalculerTotalTool(shop);
+
+    const result = await tool.execute({
+      zone: 'Porto-Novo',
+      articles: [{ ref: 'P06', quantite: 3 }],
+    });
+
+    expect(result).toEqual({
+      zone: 'Porto-Novo',
+      articles: [
+        {
+          ref: 'P06',
+          nom: 'Beurre de karité 500 g',
+          quantite: 3,
+          prix_unitaire_fcfa: 3500,
+          sous_total_fcfa: 10500,
+        },
+      ],
+      sous_total_articles_fcfa: 10500,
+      frais_livraison_fcfa: 3000,
+      total_fcfa: 13500,
+      delai: '24 à 48 h',
+    });
+  });
+
+  it('returns exact error on unknown reference', async () => {
+    const shop = new Shop();
+    const tool = new CalculerTotalTool(shop);
+
+    const result = await tool.execute({
+      zone: 'Calavi',
+      articles: [{ ref: 'P99', quantite: 1 }],
+    });
+
+    expect(result).toEqual({
+      erreur: 'référence inconnue',
+      conseil: 'utiliser chercher_produits pour trouver la bonne référence',
+    });
+  });
+
+  it('returns exact error on unserviced zone', async () => {
+    const shop = new Shop();
+    const tool = new CalculerTotalTool(shop);
+
+    const result = await tool.execute({
+      zone: 'Lomé',
+      articles: [{ ref: 'P05', quantite: 1 }],
+    });
+
+    expect(result).toEqual({
+      erreur: 'zone non desservie',
+      zones_desservies: [...CANONICAL_ZONE_NAMES],
+    });
+  });
+
+  it('returns exact error on insufficient stock', async () => {
+    const shop = new Shop();
+    const tool = new CalculerTotalTool(shop);
+
+    const result = await tool.execute({
+      zone: 'Cotonou',
+      articles: [{ ref: 'P03', quantite: 1 }],
+    });
+
+    expect(result).toEqual({
+      erreur: 'stock insuffisant pour Sac en raphia',
+      stock_disponible: 0,
+    });
+  });
+
+  it('returns exact error on invalid arguments', async () => {
+    const shop = new Shop();
+    const tool = new CalculerTotalTool(shop);
+
+    expect((await tool.execute(null)).erreur).toBe('argument invalide');
+    expect((await tool.execute({})).erreur).toBe('argument invalide');
+    expect((await tool.execute({ zone: '', articles: [{ ref: 'P01', quantite: 1 }] })).erreur).toBe('argument invalide');
+    expect((await tool.execute({ zone: 'Cotonou', articles: [] })).erreur).toBe('argument invalide');
+    expect((await tool.execute({ zone: 'Cotonou', articles: [{ ref: 'P01', quantite: 0 }] })).erreur).toBe('argument invalide');
+    expect((await tool.execute({ zone: 'Cotonou', articles: [{ ref: '', quantite: 1 }] })).erreur).toBe('argument invalide');
   });
 });
