@@ -189,13 +189,13 @@ describe('Domain - Pricing Calculation', () => {
 });
 
 describe('Domain - Stock Decrement and Atomicity', () => {
-  it('decrements stock on successful order', () => {
+  it('decrements stock on successful order', async () => {
     const shop = new Shop();
-    const initialCheck = shop.checkStock('P01');
+    const initialCheck = await shop.checkStock('P01');
     expect(initialCheck?.stock).toBe(14);
     expect(initialCheck?.categorie).toBe('tissu');
 
-    const result = shop.createOrder({
+    const result = await shop.createOrder({
       clientNom: 'Koffi Mensah',
       zone: 'Cotonou',
       articles: [{ ref: 'P01', quantite: 2 }],
@@ -210,19 +210,19 @@ describe('Domain - Stock Decrement and Atomicity', () => {
     expect(result.order.frais_livraison_fcfa).toBe(1000);
     expect(result.order.total_fcfa).toBe(25000);
 
-    const postCheck = shop.checkStock('P01');
+    const postCheck = await shop.checkStock('P01');
     expect(postCheck?.stock).toBe(12);
   });
 
-  it('guarantees atomicity: no stock is decremented if one article has insufficient stock', () => {
+  it('guarantees atomicity: no stock is decremented if one article has insufficient stock', async () => {
     const shop = new Shop();
     // P01 has 14 in stock, P03 has 0 in stock
-    const p01Initial = shop.checkStock('P01')?.stock;
-    const p03Initial = shop.checkStock('P03')?.stock;
+    const p01Initial = (await shop.checkStock('P01'))?.stock;
+    const p03Initial = (await shop.checkStock('P03'))?.stock;
     expect(p01Initial).toBe(14);
     expect(p03Initial).toBe(0);
 
-    const result = shop.createOrder({
+    const result = await shop.createOrder({
       clientNom: 'Amina S.',
       zone: 'Calavi',
       articles: [
@@ -238,14 +238,14 @@ describe('Domain - Stock Decrement and Atomicity', () => {
     expect(result.message).toContain('stock insuffisant pour Sac en raphia');
 
     // P01 stock MUST NOT have changed!
-    expect(shop.checkStock('P01')?.stock).toBe(14);
-    expect(shop.checkStock('P03')?.stock).toBe(0);
-    expect(shop.getOrders()).toHaveLength(0);
+    expect((await shop.checkStock('P01'))?.stock).toBe(14);
+    expect((await shop.checkStock('P03'))?.stock).toBe(0);
+    expect(await shop.getOrders()).toHaveLength(0);
   });
 
-  it('fails atomically if reference is unknown', () => {
+  it('fails atomically if reference is unknown', async () => {
     const shop = new Shop();
-    const result = shop.createOrder({
+    const result = await shop.createOrder({
       clientNom: 'Amina',
       zone: 'Cotonou',
       articles: [
@@ -257,12 +257,12 @@ describe('Domain - Stock Decrement and Atomicity', () => {
     expect(result.success).toBe(false);
     if (result.success) return;
     expect(result.reason).toBe('UNKNOWN_REFERENCE');
-    expect(shop.checkStock('P01')?.stock).toBe(14);
+    expect((await shop.checkStock('P01'))?.stock).toBe(14);
   });
 
-  it('fails atomically if zone is not serviced', () => {
+  it('fails atomically if zone is not serviced', async () => {
     const shop = new Shop();
-    const result = shop.createOrder({
+    const result = await shop.createOrder({
       clientNom: 'Amina',
       zone: 'Lomé',
       articles: [{ ref: 'P01', quantite: 1 }],
@@ -274,6 +274,6 @@ describe('Domain - Stock Decrement and Atomicity', () => {
     if (result.reason === 'UNSERVICED_ZONE') {
       expect(result.zones_desservies).toEqual(CANONICAL_ZONE_NAMES);
     }
-    expect(shop.checkStock('P01')?.stock).toBe(14);
+    expect((await shop.checkStock('P01'))?.stock).toBe(14);
   });
 });

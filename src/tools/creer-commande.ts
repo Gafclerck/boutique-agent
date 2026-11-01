@@ -104,7 +104,7 @@ export class CreerCommandeTool implements Tool {
       });
     }
 
-    const result = this.shop.createOrder({
+    const result = await this.shop.placeOrder({
       clientNom: client_nom,
       zone,
       articles: parsedArticles,

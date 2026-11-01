@@ -35,7 +35,7 @@ export class VerifierStockTool implements Tool {
     }
 
     const ref = (args as { ref: string }).ref.trim();
-    const result = this.shop.checkStock(ref);
+    const result = await this.shop.checkStock(ref);
 
     if (!result) {
       return {

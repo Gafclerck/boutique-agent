@@ -10,6 +10,13 @@ import {
   type Zone,
 } from './catalogue.js';
 import { calculateTotal, type PricedItem } from './pricing.js';
+import {
+  type RecordedOrder,
+  type RecordedOrderLine,
+  type ShopState,
+  type ShopStore,
+} from '../ports/shop-store.js';
+import { InMemoryStore } from '../adapters/store/in-memory-store.js';
 
 export class InvalidKeywordError extends Error {
   constructor(message = 'mot-clé invalide') {
@@ -18,22 +25,8 @@ export class InvalidKeywordError extends Error {
   }
 }
 
-export interface OrderItem {
-  readonly ref: string;
-  readonly nom: string;
-  readonly quantite: number;
-  readonly prix_unitaire_fcfa: number;
-  readonly sous_total_fcfa: number;
-}
-
-export interface Order {
-  readonly numero_commande: string;
-  readonly client_nom: string;
-  readonly zone: string;
-  readonly articles: readonly OrderItem[];
-  readonly frais_livraison_fcfa: number;
-  readonly total_fcfa: number;
-}
+export type OrderItem = RecordedOrderLine;
+export type Order = RecordedOrder;
 
 export interface StockCheckResult {
   readonly ref: string;
@@ -43,8 +36,27 @@ export interface StockCheckResult {
   readonly disponible: boolean;
 }
 
-export type OrderCreationResult =
-  | { readonly success: true; readonly order: Order }
+export interface OrderInputItem {
+  readonly ref: string;
+  readonly quantite: number;
+}
+
+export interface OrderInput {
+  readonly clientNom?: string;
+  readonly client_nom?: string;
+  readonly zone: string;
+  readonly articles: readonly OrderInputItem[];
+}
+
+export interface OrderPreview {
+  readonly client_nom: string;
+  readonly zone: string;
+  readonly articles: readonly OrderItem[];
+  readonly frais_livraison_fcfa: number;
+  readonly total_fcfa: number;
+}
+
+export type OrderFailureReason =
   | {
       readonly success: false;
       readonly reason: 'UNSERVICED_ZONE';
@@ -69,29 +81,35 @@ export type OrderCreationResult =
       readonly message: string;
     };
 
-/**
- * PALIER 1 DESIGN NOTE:
- * At Palier 1, no human validation workflow exists (Afi validation will be introduced in Palier 2).
- * The order is directly registered and confirmed in memory as soon as the client explicitly agrees.
- */
-export class Shop {
-  private products: Map<
-    string,
-    { ref: string; nom: string; categorie: string; prix_fcfa: number; stock: number }
-  >;
-  private orders: Order[] = [];
-  private orderCounter = 1;
+export type OrderPreviewResult =
+  | { readonly success: true; readonly preview: OrderPreview }
+  | OrderFailureReason;
 
-  constructor(initialProducts: readonly Product[] = INITIAL_PRODUCTS) {
+export type OrderCreationResult =
+  | { readonly success: true; readonly order: RecordedOrder }
+  | OrderFailureReason;
+
+export class Shop {
+  private readonly products: Map<string, Product>;
+  private readonly store: ShopStore;
+
+  constructor(
+    store: ShopStore = new InMemoryStore(),
+    initialProducts: readonly Product[] = INITIAL_PRODUCTS,
+  ) {
+    this.store = store;
     this.products = new Map(
       initialProducts.map((p) => [p.ref.toUpperCase(), { ...p }]),
     );
   }
 
+  public getStore(): ShopStore {
+    return this.store;
+  }
+
   /**
    * Search catalogue products by keyword (multi-word, stop-words ignored, plural tolerated, order indifferent).
-   * A product matches if EVERY remaining word matches a word of the product's name OR category.
-   * Throws InvalidKeywordError if keyword is empty or composed only of stop-words.
+   * Catalogue details (names, categories, prices) are static.
    */
   public searchProducts(keyword: string): Product[] {
     const significantWords = filterSignificantWords(keyword);
@@ -126,18 +144,21 @@ export class Shop {
   }
 
   /**
-   * Get product stock information by reference.
+   * Get product stock information by reference from store.
    */
-  public checkStock(ref: string): StockCheckResult | null {
+  public async checkStock(ref: string): Promise<StockCheckResult | null> {
     const product = this.products.get(ref.trim().toUpperCase());
     if (!product) return null;
+
+    const state = await this.store.readState();
+    const currentStock = state.stock[product.ref] ?? 0;
 
     return {
       ref: product.ref,
       nom: product.nom,
       categorie: product.categorie,
-      stock: product.stock,
-      disponible: product.stock > 0,
+      stock: currentStock,
+      disponible: currentStock > 0,
     };
   }
 
@@ -158,15 +179,15 @@ export class Shop {
   }
 
   /**
-   * Create an order with atomic stock decrement.
-   * If any item is invalid or out of stock, nothing is decremented.
+   * Common validation logic against a specific ShopState snapshot.
+   * Validates references, zone, and stock availability without mutating anything.
    */
-  public createOrder(params: {
-    clientNom: string;
-    zone: string;
-    articles: ReadonlyArray<{ ref: string; quantite: number }>;
-  }): OrderCreationResult {
-    const trimmedNom = params.clientNom?.trim();
+  public validateOrderAgainstState(
+    params: OrderInput,
+    state: ShopState,
+  ): OrderPreviewResult {
+    const rawNom = params.clientNom ?? params.client_nom;
+    const trimmedNom = rawNom?.trim();
     if (!trimmedNom) {
       return {
         success: false,
@@ -193,11 +214,11 @@ export class Shop {
       };
     }
 
-    // Phase 1: Verification (atomicity check)
-    const verifiedItems: Array<{
-      product: { ref: string; nom: string; categorie: string; prix_fcfa: number; stock: number };
-      quantite: number;
-    }> = [];
+    const orderItems: OrderItem[] = [];
+    const pricedItems: PricedItem[] = [];
+
+    // Temporary tracking of quantity per reference in the current order (to handle repeated refs)
+    const demandedPerRef = new Map<string, number>();
 
     for (const item of params.articles) {
       if (
@@ -210,11 +231,13 @@ export class Shop {
         return {
           success: false,
           reason: 'INVALID_INPUT',
-          message: 'article invalide (référence requise et quantité entière >= 1)',
+          message:
+            'article invalide (référence requise et quantité entière >= 1)',
         };
       }
 
-      const product = this.products.get(item.ref.trim().toUpperCase());
+      const upperRef = item.ref.trim().toUpperCase();
+      const product = this.products.get(upperRef);
       if (!product) {
         return {
           success: false,
@@ -224,57 +247,110 @@ export class Shop {
         };
       }
 
-      if (product.stock < item.quantite) {
+      const previousDemanded = demandedPerRef.get(upperRef) ?? 0;
+      const totalDemanded = previousDemanded + item.quantite;
+      const currentAvailable = state.stock[upperRef] ?? 0;
+
+      if (currentAvailable < totalDemanded) {
         return {
           success: false,
           reason: 'INSUFFICIENT_STOCK',
           message: `stock insuffisant pour ${product.nom}`,
-          stock_disponible: product.stock,
+          stock_disponible: currentAvailable,
         };
       }
 
-      verifiedItems.push({ product, quantite: item.quantite });
-    }
+      demandedPerRef.set(upperRef, totalDemanded);
 
-    // Phase 2: Atomic Execution (decrement stock)
-    const orderItems: OrderItem[] = [];
-    const pricedItems: PricedItem[] = [];
-
-    for (const { product, quantite } of verifiedItems) {
-      product.stock -= quantite;
-
-      const sousTotal = product.prix_fcfa * quantite;
+      const sousTotal = product.prix_fcfa * item.quantite;
       orderItems.push({
         ref: product.ref,
         nom: product.nom,
-        quantite,
+        quantite: item.quantite,
         prix_unitaire_fcfa: product.prix_fcfa,
         sous_total_fcfa: sousTotal,
       });
 
       pricedItems.push({
         prix_unitaire_fcfa: product.prix_fcfa,
-        quantite,
+        quantite: item.quantite,
       });
     }
 
     const totalFcfa = calculateTotal(pricedItems, matchedZone.frais_fcfa);
-    const numeroCommande = `CMD-${this.orderCounter++}`;
 
-    const order: Order = {
-      numero_commande: numeroCommande,
-      client_nom: trimmedNom,
-      zone: matchedZone.zone,
-      articles: orderItems,
-      frais_livraison_fcfa: matchedZone.frais_fcfa,
-      total_fcfa: totalFcfa,
+    return {
+      success: true,
+      preview: {
+        client_nom: trimmedNom,
+        zone: matchedZone.zone,
+        articles: orderItems,
+        frais_livraison_fcfa: matchedZone.frais_fcfa,
+        total_fcfa: totalFcfa,
+      },
     };
-
-    this.orders.push(order);
-    return { success: true, order };
   }
 
-  public getOrders(): readonly Order[] {
-    return this.orders;
+  /**
+   * Preview an order: validates references, zone, stock and calculates total WITHOUT mutating state.
+   */
+  public async previewOrder(params: OrderInput): Promise<OrderPreviewResult> {
+    const state = await this.store.readState();
+    return this.validateOrderAgainstState(params, state);
+  }
+
+  /**
+   * Place an order: validates and atomically decrements stock and registers order in store.transact.
+   */
+  public async placeOrder(params: OrderInput): Promise<OrderCreationResult> {
+    return this.store.transact((state) => {
+      const validation = this.validateOrderAgainstState(params, state);
+      if (!validation.success) {
+        return validation;
+      }
+
+      const preview = validation.preview;
+
+      // Decrement stock atomically
+      for (const item of preview.articles) {
+        state.stock[item.ref] = (state.stock[item.ref] ?? 0) - item.quantite;
+      }
+
+      const nextNum = state.prochain_numero ?? 1;
+      const numeroCommande = `CMD-${nextNum}`;
+      state.prochain_numero = nextNum + 1;
+
+      const order: RecordedOrder = {
+        numero_commande: numeroCommande,
+        client_nom: preview.client_nom,
+        zone: preview.zone,
+        articles: preview.articles,
+        lignes: preview.articles,
+        frais_livraison_fcfa: preview.frais_livraison_fcfa,
+        frais: preview.frais_livraison_fcfa,
+        total_fcfa: preview.total_fcfa,
+        total: preview.total_fcfa,
+        statut: 'confirmee',
+        date: new Date().toISOString(),
+      };
+
+      state.commandes.push(order);
+      return { success: true, order };
+    });
+  }
+
+  /**
+   * Alias for placeOrder for backward compatibility.
+   */
+  public async createOrder(params: OrderInput): Promise<OrderCreationResult> {
+    return this.placeOrder(params);
+  }
+
+  /**
+   * Get all confirmed orders from the store.
+   */
+  public async getOrders(): Promise<readonly RecordedOrder[]> {
+    const state = await this.store.readState();
+    return state.commandes;
   }
 }
