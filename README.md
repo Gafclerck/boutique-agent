@@ -204,14 +204,16 @@ Pouvez-vous choisir l'une de ces zones pour votre livraison ?
 Client : C'est combien le sac en raphia ?
 
 --- Trace d'exécution ---
-[Étape 1] Appel LLM (anthropic/claude-haiku-4-5-20251001) : 2339 prompt + 81 compl = 2420 tokens
-[Étape 1] chercher_produits({"mot_cle":"sac raphia"}) -> {"erreur":"aucun produit pour sac raphia","conseil":"essayer un mot plus général (ex : pagne, robe, sac)"} (1ms)
-[Étape 2] Appel LLM (anthropic/claude-haiku-4-5-20251001) : 2467 prompt + 73 compl = 2540 tokens
-[Fin] Arrêt : answered | Appels LLM : 2 | Tokens cumulés : 4960
+[Étape 1] Appel LLM (anthropic/claude-haiku-4-5-20251001) : 2390 prompt + 81 compl = 2471 tokens
+[Étape 1] chercher_produits({"mot_cle":"sac raphia"}) -> {"produits":[{"ref":"P03","nom":"Sac en raphia","categorie":"accessoire","prix_fcfa":7500}]} (2ms)
+[Étape 2] Appel LLM (anthropic/claude-haiku-4-5-20251001) : 2518 prompt + 50 compl = 2568 tokens
+[Fin] Arrêt : answered | Appels LLM : 2 | Tokens cumulés : 5039
 -------------------------
 
-Agent : Désolé, je n'ai pas trouvé de sac en raphia avec ce terme. Pouvez-vous préciser : cherchez-vous un **accessoire** ou un **sac** en particulier ? Je peux aussi chercher par catégorie si vous préférez. 😊
+Agent : Nous avons un **Sac en raphia** à **7 500 FCFA**. C'est un accessoire pratique et élégant ! Vous en voulez un ? 😊
 ```
+
+> **Note de diagnostic (Palier 1.2)** : Le correctif de recherche multi-mots permet désormais à `chercher_produits` d'identifier avec succès le **Sac en raphia** (`P03`). L'appel systématique de `verifier_stock` pour annoncer la rupture et proposer une alternative en stock fait l'objet du Palier 2a.
 
 ---
 
