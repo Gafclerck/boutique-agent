@@ -1,4 +1,4 @@
-# Boutique Agent - Palier 1 (Fondations & Agent Vendeur)
+# Boutique Agent - Palier 1 & Palier 2a (Fondations, Agent Vendeur & Persistance)
 
 Agent conversationnel vendeur d'IA pour la boutique d'Afi (vente de pagnes et accessoires au marché Dantokpa, Cotonou, Bénin). 
 L'agent dialogue en langage naturel (cible : WhatsApp), informe sur les produits et les prix, vérifie les disponibilités en stock, calcule les frais et délais de livraison, convertit les montants dans les devises étrangères (EUR, USD, NGN...) avec des taux réels, et enregistre les commandes confirmées.
@@ -19,7 +19,8 @@ Dans le commerce conversationnel en Afrique de l'Ouest (notamment sur WhatsApp),
 2. **Gestion proactive des ruptures** : en cas de stock nul, l'agent annonce le prix et la rupture, puis propose immédiatement une alternative concrète du catalogue.
 3. **Calcul exact des totaux** : $\text{Total} = \sum (\text{prix unitaire} \times \text{quantité}) + \text{frais de livraison}$.
 4. **Consentement explicite** : aucune commande n'est créée sans un récapitulatif complet validé au préalable par le client.
-5. **Taux de change réels** : interrogation en direct de l'API de change à chaque conversion (aucun calcul de tête, aucun cache statique obsolète).
+5. **Validation humaine obligatoire** : les commandes réelles font l'objet d'un accord explicite de la boutique avant confirmation définitive.
+6. **Taux de change réels** : interrogation en direct de l'API de change à chaque conversion (aucun calcul de tête, aucun cache statique obsolète).
 
 ---
 
@@ -30,13 +31,14 @@ Le projet applique une architecture hexagonale (Ports & Adapters) pragmatique et
 ```mermaid
 graph TD
   Domain["Domain (catalogue, pricing, shop)"]
-  Ports["Ports (LlmClient, types)"]
-  Adapters["Adapters (RodiumClient, FakeLlm)"]
+  Ports["Ports (LlmClient, ShopStore, ApprovalPort)"]
+  Adapters["Adapters (RodiumClient, FakeLlm, JsonFileStore, ConsoleApproval)"]
   Tools["Tools (5 outils de boutique)"]
-  Agent["Agent (loop, instructions, trace)"]
+  Agent["Agent (loop, instructions, guards, trace)"]
   Entrypoints["Entrypoints (CLI)"]
 
   Adapters --> Ports
+  Domain --> Ports
   Tools --> Domain
   Tools --> Ports
   Agent --> Domain
@@ -44,14 +46,18 @@ graph TD
   Agent --> Tools
   Entrypoints --> Agent
   Entrypoints --> Adapters
+  Entrypoints --> Domain
 ```
 
 ### Règle de dépendance
-- **`domain/` ne connaît rien** : aucun import externe, aucun port, aucun outil. Logique pure et état métier.
-- **`ports/` définit les contrats** abstraits (`LlmClient`, messages, tool calls, usage token, erreurs typées).
-- **`adapters/` implémente les ports** : `RodiumClient` (API HTTP Rodium) et `FakeLlm` (LLM scripté pour les tests unitaires).
-- **`tools/` et `agent/` (le noyau)** connaissent le domaine et les ports.
-- **`entrypoints/`** orchestre le démarrage (CLI interactive ou ponctuelle).
+- **`ports/` définit les contrats** abstraits (`LlmClient`, `ShopStore`, `ApprovalPort`, types d'événements et de messages).
+- **`domain/`** encapsule la logique métier (recherche produit, calcul de prix, prévisualisation et exécution de commande) et dépend uniquement de l'interface `ShopStore`.
+- **`adapters/` implémente les ports** :
+  - LLM : `RodiumClient` (API HTTP Rodium) et `FakeLlm` (bouchon déterministe).
+  - Magasin de données : `JsonFileStore` (fichier JSON atomique) et `InMemoryStore` (tests rapides en mémoire).
+  - Validation : `ConsoleApproval` (interaction synchrone CLI) et `FakeApproval` (décisions scriptées).
+- **`tools/` et `agent/` (le noyau)** coordonnent l'orchestration, appliquent les gardiens (`guards`) et produisent la trace.
+- **`entrypoints/`** initialise les adaptateurs et orchestre l'exécution (CLI interactif ou commande ponctuelle).
 - YAGNI strict : aucune dépendance superflue, pas de framework lourd.
 
 ---
@@ -74,8 +80,8 @@ Chaque outil implémente le contrat `Tool` : un nom, une description concise gui
    - Si base XOF indisponible, bascule automatiquement sur base USD avec calcul du taux croisé.
    - *Attribution requise* : Taux fournis par [Rates By Exchange Rate API](https://www.exchangerate-api.com) (API gratuite sans clé d'authentification, rafraîchie quotidiennement).
 5. **`creer_commande`** :
-   - Enregistrement irréversible avec décrément atomique des stocks (si un article échoue ou si le stock est insuffisant, rien n'est décrémenté).
-   - Calcule le total automatiquement depuis le catalogue et la zone.
+   - Outil sensible requérant une validation préalable (`requiresApproval: true`).
+   - Prévisualise sans effet de bord (`Shop.previewOrder`), génère le récapitulatif pour approbation humaine, puis décrémente le stock et enregistre la commande de manière atomique (`Shop.placeOrder`).
 
 ---
 
@@ -105,16 +111,21 @@ RODIUM_MODEL=anthropic/claude-haiku-4-5-20251001
 RODIUM_BASE_URL=https://api.rodiumai.io/v1
 MAX_TOKENS=600
 TEMPERATURE=0
+SHOP_DATA_FILE=data/shop.json
 ```
 
 ### Commandes npm
-- **Mode interactif (CLI WhatsApp)** :
+- **Mode interactif (CLI avec approbation humaine)** :
   ```bash
   npm start
   ```
   Permet de discuter avec l'agent en continu. Commandes spéciales dans la session :
-  - `/reset` : réinitialise l'historique de conversation et l'état du stock.
+  - `/reset` : réinitialise l'historique de conversation et recharge le magasin persistant.
   - `/quit` : quitte la session.
+- **Réinitialisation du fichier de données** :
+  ```bash
+  npm run data:reset
+  ```
 - **Mode ponctuel (une seule question)** :
   ```bash
   npm run ask "Vous avez des pagnes ?"
@@ -138,22 +149,68 @@ TEMPERATURE=0
 
 ---
 
-## 5. Limites connues du Palier 1
+## 5. Persistance et validation humaine (Palier 2a)
 
-1. **Absence de validation humaine (Workflow Afi)** :
-   - *Choix de conception documenté* : Au Palier 1, l'outil `creer_commande` enregistre la commande dès la confirmation explicite du client. La validation humaine par Afi (propriétaire) avant décrément final et encaissement fait partie du périmètre du **Palier 2**.
-2. **Persistance en mémoire** :
-   - Le catalogue et les commandes sont stockés dans la mémoire vive de l'instance (`Shop`). Un redémarrage réinitialise les stocks.
-3. **Session mono-utilisateur** :
-   - L'interface CLI gère un canal direct synchrone. L'adaptation multi-utilisateurs et la liaison aux webhooks WhatsApp interviendront ultérieurement.
-4. **Pas de machine à états de commande complexe** :
-   - La commande est enregistrée à l'état final du Palier 1 (`CMD-X`). Les statuts (en attente, validée, expédiée, livrée) arriveront au Palier 2.
+### 5.1 Fichier de données (`data/shop.json`)
+L'état de la boutique (stocks restants, historique des commandes, compteur séquentiel de commande) est conservé sur le système de fichiers :
+- Chemin configurable via la variable d'environnement `SHOP_DATA_FILE` (valeur par défaut : `data/shop.json`).
+- Le fichier `data/shop.json` est exclu du contrôle de version via `.gitignore`.
+- **Initialisation** : si le fichier est absent au premier lancement, l'état initial est automatiquement dérivé du catalogue par défaut (`INITIAL_PRODUCTS`).
+- **Protection contre la corruption** : si le fichier de données est corrompu ou illisible (JSON tronqué, syntaxe invalide ou schéma incohérent), le magasin lève immédiatement une exception explicite. Il ne réinitialise **JAMAIS** silencieusement les données existantes.
+
+### 5.2 Réinitialisation (`npm run data:reset`)
+Un script dédié et multiplateforme permet de purger le fichier persistant en toute sécurité :
+```bash
+npm run data:reset
+```
+La suppression est idempotente. Au redémarrage suivant, la boutique recrée l'état initial dérivé du catalogue officiel.
+
+### 5.3 Écriture atomique et transactions
+Pour se prémunir des pertes de données, corruptions partielles ou accès concurrents :
+- Toute mutation du stock ou création de commande transite obligatoirement par la méthode `transact(mutator)` de `ShopStore`.
+- **Écriture atomique sur disque** : `JsonFileStore` sérialise l'état modifié dans un fichier temporaire unique (`.tmp.<nom>.<timestamp>.<rand>`) dans le même répertoire, s'assure de l'écriture complète, puis procède à un renommage atomique (`fs.promises.rename`).
+- **Révocation en cas d'erreur** : si le mutateur lève une exception (ex: anomalie interne ou validation non satisfaite), aucun fichier n'est écrit et l'état en mémoire et sur disque reste strictement inchangé.
+- **Prévisualisation sans effet de bord** : la méthode `Shop.previewOrder(params)` valide les articles, contrôle la disponibilité des stocks et calcule le total exact sans toucher au magasin de données.
+
+### 5.4 Validation humaine et principe du "Fail Closed"
+La création d'une commande engage financièrement la boutique et constitue une action irréversible (décrémentation des stocks). Elle est donc encadrée par un protocole d'approbation humaine :
+1. **Déclenchement ciblé** : seul l'outil `creer_commande` requiert une approbation (`requiresApproval = true`).
+2. **Pré-validation métier sans dérangement inutile** : avant de solliciter l'opérateur, l'outil exécute `Shop.previewOrder`. Si la requête présente un défaut métier (stock épuisé, article inconnu, zone non desservie), l'erreur métier correspondante est renvoyée directement à l'agent sans interrompre l'humain.
+3. **Récapitulatif généré par le code** : le résumé présenté à l'opérateur (nom du client, liste des articles et quantités, zone de livraison, frais et total) est produit strictement par le code applicatif, garantissant qu'aucune hallucination du LLM ne puisse tromper l'opérateur.
+4. **Invite console standard** :
+   ```text
+   === Récapitulatif de la commande ===
+   Client : Afi
+   Articles :
+     - Robe en wax (P05) x 2 : 44 000 FCFA
+   Zone de livraison : Calavi
+   Frais de livraison : 2 000 FCFA
+   Total : 46 000 FCFA
+   ====================================
+
+   Valider la commande ? [o/N] 
+   ```
+   L'interaction réutilise l'interface `readline` unique de la session de conversation CLI (aucun second `readline` en conflit).
+5. **Principe du Fail Closed** :
+   - Par défaut, si l'opérateur appuie sur Entrée sans saisir `o` ou refuse explicitement (`N`), la commande est refusée. L'observation renvoyée au LLM est :
+     ```json
+     {
+       "erreur": "commande refusée par la boutique",
+       "conseil": "informer le client poliment que la commande n'a pas été validée ; ne pas la recréer sans nouvelle demande du client"
+     }
+     ```
+   - Si aucun port d'approbation n'est connecté à l'agent ou si le terminal n'est pas interactif (`stdin` non TTY), l'agent refuse systématiquement la commande (`{"erreur":"validation indisponible", ...}`).
+6. **Traçabilité complète** : chaque décision (accordée ou refusée, avec son motif) est consignée dans la trace d'exécution via un événement de type `approval`.
+
+### 5.5 Limites connues du Palier 2a
+- **Validation synchrone en console** : le processus attend de manière bloquante la réponse de l'opérateur sur la console standard avant de poursuivre la boucle d'agent.
+- **Évolution vers le Palier 3** : le cycle de vie entièrement asynchrone (mise en attente de la commande, persistance de l'état suspendu, notification webhook externe et reprise asynchrone lors du retour d'Afi sur WhatsApp) sera introduit au Palier 3.
 
 ---
 
-## 6. Traces d'exécution des 3 scénarios réels
+## 6. Traces d'exécution des 3 scénarios réels (Palier 1)
 
-Les 3 scénarios ont été réexécutés avec l'API Rodium AI en direct (`anthropic/claude-haiku-4-5-20251001`). Voici les traces réelles et les réponses obtenues :
+Les 3 scénarios initiaux ont été mesurés avec l'API Rodium AI en direct (`anthropic/claude-haiku-4-5-20251001`). Voici les traces réelles et les réponses obtenues :
 
 ### Scénario 1 : Recherche produit et conversion autonome en devises
 > **Requête client** : *"Vous avez des pagnes ? Combien ça fait en euros pour ma soeur à Paris ?"*
@@ -221,8 +278,6 @@ Client : C'est combien le sac en raphia ?
 Agent : Nous avons un **Sac en raphia** à **7 500 FCFA**. C'est un accessoire pratique et élégant ! Vous en voulez un ? 😊
 ```
 
-> **Note de diagnostic (Palier 1.2)** : Le correctif de recherche multi-mots permet désormais à `chercher_produits` d'identifier avec succès le **Sac en raphia** (`P03`). L'appel systématique de `verifier_stock` pour annoncer la rupture et proposer une alternative en stock fait l'objet du Palier 2a.
-
 ---
 
 ## 7. Comment reproduire la trace du livrable
@@ -248,26 +303,12 @@ La trace s'affiche directement sur la sortie standard avant la réponse de l'age
 Pour garantir la robustesse de l'agent sans épuiser de crédits API, le projet met en œuvre une pyramide de tests équilibrée à deux niveaux :
 
 1. **Tests déterministes gratuits par défaut (socle de la pyramide)** :
-   - Tous les tests de domaine, d'outils, de boucle d'agent et de conformité de scénarios (`npm test`) s'exécutent exclusivement à l'aide de simulations scriptées via `FakeLlm`.
+   - Tous les tests de domaine, de magasin persistant, d'approbation humaine, d'outils, de boucle d'agent et de scénarios (`npm test`) s'exécutent exclusivement à l'aide de simulations scriptées via `FakeLlm` et des magasins temporaires.
    - Exécution 100 % locale, reproductible, instantanée, sans dépendance réseau et à coût strictement nul (0 $ / 0 RODI).
-   - Ces tests couvrent à la fois les parcours conformes nominaux et les échecs réels documentés (recherche absente, omission de `verifier_stock`, rupture annoncée sans alternative vérifiée, etc.).
+   - Ces tests couvrent à la fois les parcours conformes nominaux et les échecs réels documentés (recherche absente, omission de `verifier_stock`, rupture annoncée sans alternative vérifiée, refus d'approbation humaine, etc.).
 2. **Tests live opt-in plafonnés (sommet de la pyramide)** :
    - Le script `scripts/live-check.ts` (accessible via `npm run live`) est réservé à des campagnes d'évaluation ciblées face à de vrais modèles de langage distants.
    - Ce mode est verrouillé par des gardes-fous stricts : refus catégorique d'exécution sans `LIVE=1`, calcul préalable du plan d'appels, plafond dur de requêtes (`--max-llm-calls`), lecture préventive du solde `/wallet` et mode simulation `--dry-run`.
 
 ### 8.2 Règle stricte : aucun appel réel hors `npm run live`
 La commande standard `npm test` ainsi que la validation de types TypeScript `npm run typecheck` ne déclenchent **aucun appel réel** au LLM ni aucune requête payante. Les appels réels sont restreints exclusivement à l'invocation explicite de `npm run live` sous l'aval du flag d'environnement `LIVE=1`.
-
-### 8.3 Règle des trois et représentativité statistique
-Une série de 5 essais consécutifs sans échec ne suffit pas à garantir statistiquement un taux de réussite élevé :
-- En statistique (règle des trois pour un intervalle de confiance à 95 %), lorsque l'on observe $0$ échec sur un échantillon de $n$ essais indépendants, la borne supérieure du taux d'échec réel $p$ est estimée à :
-  $$p \approx \frac{3}{n}$$
-- Avec **5 essais sans échec** ($n = 5$), le taux d'échec réel peut encore culminer jusqu'à $3 / 5 = 60\,\%$.
-- Pour pouvoir certifier avec 95 % de confiance statistique un taux d'échec inférieur à **5 %** ($p < 0{,}05$), il faudrait observer au bas mot **60 essais consécutifs sans aucun échec** ($3 / 60 = 0{,}05$).
-- L'évaluation par tests déterministes sur des exécutions scriptées permet précisément de valider les règles de contrôle et de décision sans devoir financer 60 appels réels au LLM par scénario.
-
-### 8.4 Optimisation du budget de tokens (instructions et descriptions d'outils)
-Dans le patron d'agent autonome Penser-Agir-Observer, le modèle est consulté à chaque étape de la boucle de décision (`callModel`) :
-- À chaque tour de boucle, l'intégralité du prompt système (`SYSTEM_INSTRUCTIONS`) ainsi que la totalité des définitions JSON Schema de tous les outils déclarés (`ToolDefinition[]`) sont renvoyées en entrée du modèle.
-- Une consigne verbeuse ou des descriptions d'outils démesurées gonflent de manière exponentielle les tokens de prompt consommés à chaque étape.
-- **Conseil d'optimisation budgétaire** : limiter au strict nécessaire la taille des instructions et des descriptions d'outils (sans bavardage inutile) afin de minimiser le coût unitaire de chaque tour de boucle et de maximiser l'autonomie de l'agent dans les limites de crédits imparties.
