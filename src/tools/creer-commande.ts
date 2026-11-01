@@ -32,11 +32,15 @@ function formatFailure(result: OrderFailureReason): Record<string, unknown> {
   }
 }
 
+function formatPrice(amount: number): string {
+  return amount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+}
+
 function formatRecapitulatif(preview: OrderPreview): string {
   const articlesLines = preview.articles
     .map(
       (a) =>
-        `  - ${a.nom} (${a.ref}) x ${a.quantite} : ${a.sous_total_fcfa.toLocaleString('fr-FR')} FCFA`,
+        `  - ${a.nom} (${a.ref}) x ${a.quantite} : ${formatPrice(a.sous_total_fcfa)} FCFA`,
     )
     .join('\n');
 
@@ -45,8 +49,8 @@ function formatRecapitulatif(preview: OrderPreview): string {
     `Client : ${preview.client_nom}`,
     `Articles :\n${articlesLines}`,
     `Zone de livraison : ${preview.zone}`,
-    `Frais de livraison : ${preview.frais_livraison_fcfa.toLocaleString('fr-FR')} FCFA`,
-    `Total : ${preview.total_fcfa.toLocaleString('fr-FR')} FCFA`,
+    `Frais de livraison : ${formatPrice(preview.frais_livraison_fcfa)} FCFA`,
+    `Total : ${formatPrice(preview.total_fcfa)} FCFA`,
     '====================================',
   ].join('\n');
 }
