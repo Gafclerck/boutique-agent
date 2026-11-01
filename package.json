@@ -1,0 +1,29 @@
+{
+  "name": "boutique-agent",
+  "version": "1.0.0",
+  "description": "Agent vendeur IA pour la boutique d'Afi (marché Dantokpa, Bénin) - Palier 1",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/entrypoints/cli.ts",
+    "ask": "tsx src/entrypoints/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "ai-agent",
+    "boutique",
+    "llm",
+    "typescript"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
