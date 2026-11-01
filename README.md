@@ -204,7 +204,8 @@ La création d'une commande engage financièrement la boutique et constitue une 
 
 ### 5.5 Limites connues du Palier 2a
 - **Validation synchrone en console** : le processus attend de manière bloquante la réponse de l'opérateur sur la console standard avant de poursuivre la boucle d'agent.
-- **Évolution vers le Palier 3** : le cycle de vie entièrement asynchrone (mise en attente de la commande, persistance de l'état suspendu, notification webhook externe et reprise asynchrone lors du retour d'Afi sur WhatsApp) sera introduit au Palier 3.
+- **Concurrence mono-processus** : la sérialisation des transactions via file de promesses (`Promise queue`) garantit l'exclusion mutuelle et l'atomicité au sein d'un même processus Node.js. En revanche, aucun verrou de fichier inter-processus n'est géré au niveau du système d'exploitation si plusieurs processus OS distincts accèdent simultanément au même fichier `shop.json`.
+- **Évolution vers le Palier 3 (D1 / Durable Objects)** : pour un déploiement serveur, multi-instances ou sans état (serverless), la persistance sera adaptée avec Cloudflare D1 (base de données relationnelle transactionnelle) ou des Cloudflare Durable Objects (cohérence transactionnelle distribuée et acteur unique garantissant la sérialisation). Le cycle de vie asynchrone des commandes (mise en attente, reprise sur webhook WhatsApp) y sera également introduit.
 
 ---
 
