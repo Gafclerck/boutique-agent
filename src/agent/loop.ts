@@ -1,3 +1,4 @@
+import { INITIAL_PRODUCTS, type Product } from '../domain/catalogue.js';
 import type { ApprovalPort } from '../ports/approval.js';
 import type {
   ChatMessage,
@@ -8,12 +9,23 @@ import type {
   ToolDefinition,
 } from '../ports/llm-client.js';
 import type { ToolRegistry } from '../tools/registry.js';
+import {
+  buildCritiqueMessage,
+  hasPriorCatalogueLookup,
+  type EvaluationInput,
+  type Evaluator,
+} from './evaluation/index.js';
 import { evaluateToolGuard } from './guards.js';
 import type {
   ApprovalTraceEvent,
   ToolCallTraceEvent,
   TraceEvent,
 } from './trace.js';
+
+export {
+  hasPriorCatalogueLookup,
+  type Evaluator,
+} from './evaluation/index.js';
 
 export interface RunAgentParams {
   readonly llm: LlmClient;
@@ -24,16 +36,25 @@ export interface RunAgentParams {
   readonly maxSteps?: number;
   readonly maxTokens?: number;
   readonly approval?: ApprovalPort;
+  readonly evaluate?: Evaluator;
+  readonly maxEvaluationRetries?: number;
+  readonly catalogue?: readonly Product[];
 }
 
 export interface AgentRunResult {
   readonly reply: string;
-  readonly stopReason: 'answered' | 'max_steps' | 'empty_reply';
+  readonly stopReason:
+    | 'answered'
+    | 'max_steps'
+    | 'empty_reply'
+    | 'evaluation_failed';
   readonly steps: number;
   readonly llmCalls: number;
   readonly usage: TokenUsage;
   readonly trace: readonly TraceEvent[];
   readonly messages: readonly ChatMessage[];
+  readonly evaluationRetries: number;
+  readonly lastViolations?: readonly string[];
 }
 
 export const FALLBACK_MAX_STEPS_MESSAGE =
@@ -41,6 +62,9 @@ export const FALLBACK_MAX_STEPS_MESSAGE =
 
 export const FALLBACK_EMPTY_REPLY_MESSAGE =
   "Je vous prie de m'excuser, je n'ai pas pu formuler de réponse. Pouvez-vous reformuler ou préciser votre demande ?";
+
+export const EVALUATION_FALLBACK_MESSAGE =
+  "Je ne suis pas en mesure de confirmer cette information pour le moment. Pouvez-vous reformuler votre demande ?";
 
 function computeTotalTokens(usage: TokenUsage): number {
   return usage.totalTokens ?? usage.promptTokens + usage.completionTokens;
@@ -128,7 +152,13 @@ export async function executeSingleToolCall(
 
 export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> {
   const boundedMaxSteps = Math.min(Math.max(params.maxSteps ?? 8, 1), 10);
+  const maxEvaluationRetries = Math.min(
+    Math.max(params.maxEvaluationRetries ?? 2, 0),
+    3,
+  );
+  const catalogue = params.catalogue ?? INITIAL_PRODUCTS;
   const toolDefinitions = params.tools.getDefinitions();
+  const priorCatalogueLookup = hasPriorCatalogueLookup(params.history);
 
   const messages: ChatMessage[] = [
     { role: 'system', content: params.instructions },
@@ -136,11 +166,16 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
     { role: 'user', content: params.userMessage },
   ];
 
+  // Track retry messages (rejected drafts and quality critiques) to exclude them from result.messages
+  const retryMessages = new Set<ChatMessage>();
+
   const traceEvents: TraceEvent[] = [];
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let totalTokens = 0;
   let llmCalls = 0;
+  let evaluationRetries = 0;
+  let lastViolations: string[] | undefined;
 
   for (let step = 1; step <= boundedMaxSteps; step++) {
     const response = await callModel(
@@ -198,10 +233,132 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
     // No tool calls: final text answer
     const rawReply = response.message.content ?? '';
     const isEmpty = rawReply.trim().length === 0;
-    const finalReply = isEmpty ? FALLBACK_EMPTY_REPLY_MESSAGE : rawReply;
-    const stopReason = isEmpty ? 'empty_reply' : 'answered';
 
-    messages.push({
+    if (isEmpty) {
+      // Empty reply fallback: no evaluation
+      const finalReply = FALLBACK_EMPTY_REPLY_MESSAGE;
+      const stopReason = 'empty_reply';
+
+      const finalMessages = messages.filter((m) => !retryMessages.has(m));
+      finalMessages.push({
+        role: 'assistant',
+        content: finalReply,
+      });
+
+      traceEvents.push({
+        type: 'stop',
+        step,
+        reason: stopReason,
+        totalLlmCalls: llmCalls,
+        totalTokens,
+      });
+
+      return {
+        reply: finalReply,
+        stopReason,
+        steps: step,
+        llmCalls,
+        usage: {
+          promptTokens: totalPromptTokens,
+          completionTokens: totalCompletionTokens,
+          totalTokens,
+        },
+        trace: traceEvents,
+        messages: finalMessages,
+        evaluationRetries,
+        lastViolations,
+      };
+    }
+
+    // Non-empty reply: evaluate if evaluator provided
+    if (params.evaluate) {
+      const evalInput: EvaluationInput = {
+        userMessage: params.userMessage,
+        reply: rawReply,
+        trace: traceEvents,
+        catalogue,
+        hasPriorCatalogueLookup: priorCatalogueLookup,
+      };
+
+      const verdict = await params.evaluate(evalInput);
+
+      traceEvents.push({
+        type: 'evaluation',
+        step,
+        ok: verdict.ok,
+        violations: verdict.violations.map((v) => v.rule),
+        retryNumber: evaluationRetries,
+      });
+
+      if (!verdict.ok) {
+        lastViolations = verdict.violations.map((v) => v.rule);
+
+        if (evaluationRetries < maxEvaluationRetries) {
+          evaluationRetries++;
+          traceEvents.push({
+            type: 'retry',
+            step,
+            retryNumber: evaluationRetries,
+          });
+
+          const draftMessage: ChatMessage = {
+            role: 'assistant',
+            content: rawReply,
+          };
+          const critiqueMessage: ChatMessage = {
+            role: 'user',
+            content: buildCritiqueMessage(verdict.violations),
+          };
+
+          retryMessages.add(draftMessage);
+          retryMessages.add(critiqueMessage);
+
+          messages.push(draftMessage, critiqueMessage);
+          continue;
+        }
+
+        // No more retries: fallback
+        const finalReply = EVALUATION_FALLBACK_MESSAGE;
+        const stopReason = 'evaluation_failed';
+
+        const finalMessages = messages.filter((m) => !retryMessages.has(m));
+        finalMessages.push({
+          role: 'assistant',
+          content: finalReply,
+        });
+
+        traceEvents.push({
+          type: 'stop',
+          step,
+          reason: stopReason,
+          totalLlmCalls: llmCalls,
+          totalTokens,
+        });
+
+        return {
+          reply: finalReply,
+          stopReason,
+          steps: step,
+          llmCalls,
+          usage: {
+            promptTokens: totalPromptTokens,
+            completionTokens: totalCompletionTokens,
+            totalTokens,
+          },
+          trace: traceEvents,
+          messages: finalMessages,
+          evaluationRetries,
+          lastViolations,
+        };
+      }
+    }
+
+    // Verdict ok or no evaluate provided: accepted
+    const finalReply = rawReply;
+    const stopReason = 'answered';
+
+    const finalMessages = messages.filter((m) => !retryMessages.has(m));
+    finalMessages.push({
       role: 'assistant',
       content: finalReply,
     });
@@ -225,14 +382,18 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
         totalTokens,
       },
       trace: traceEvents,
-      messages,
+      messages: finalMessages,
+      evaluationRetries,
+      lastViolations,
     };
   }
 
   // Max steps reached
-  messages.push({
+  const finalReply = FALLBACK_MAX_STEPS_MESSAGE;
+  const finalMessages = messages.filter((m) => !retryMessages.has(m));
+  finalMessages.push({
     role: 'assistant',
-    content: FALLBACK_MAX_STEPS_MESSAGE,
+    content: finalReply,
   });
 
   traceEvents.push({
@@ -244,7 +405,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
   });
 
   return {
-    reply: FALLBACK_MAX_STEPS_MESSAGE,
+    reply: finalReply,
     stopReason: 'max_steps',
     steps: boundedMaxSteps,
     llmCalls,
@@ -254,6 +415,8 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       totalTokens,
     },
     trace: traceEvents,
-    messages,
+    messages: finalMessages,
+    evaluationRetries,
+    lastViolations,
   };
 }

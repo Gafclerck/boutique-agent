@@ -5,7 +5,9 @@ import {
   wordMatches,
   type Product,
 } from '../../domain/catalogue.js';
+import type { ChatMessage } from '../../ports/llm-client.js';
 import type { TraceEvent } from '../trace.js';
+import type { Violation } from './types.js';
 
 export { filterSignificantWords, getSearchStems, normalizeText, wordMatches };
 
@@ -195,3 +197,50 @@ export function extractNumbersFromText(text: string): ExtractedNumber[] {
 
   return results;
 }
+
+export const QUALITY_CRITIQUE_PREFIX = '[Contrôle qualité]';
+
+/**
+ * Builds the critique message by prepending [Contrôle qualité] and joining all
+ * violation critiques, one per line in deterministic order.
+ */
+export function buildCritiqueMessage(violations: readonly Violation[]): string {
+  const critiques = violations.map((v) => v.critique);
+  return `${QUALITY_CRITIQUE_PREFIX}\n${critiques.join('\n')}`;
+}
+
+/**
+ * Pure function: detects whether history contains a tool result from 'chercher_produits'.
+ * Maps tool_call_id in tool messages to the tool name from assistant messages.
+ */
+export function hasPriorCatalogueLookup(
+  history?: readonly ChatMessage[],
+): boolean {
+  if (!history || history.length === 0) {
+    return false;
+  }
+
+  const toolNameById = new Map<string, string>();
+  for (const message of history) {
+    if (message.role === 'assistant' && message.tool_calls) {
+      for (const call of message.tool_calls) {
+        if (call.id && call.function?.name) {
+          toolNameById.set(call.id, call.function.name);
+        }
+      }
+    }
+  }
+
+  for (const message of history) {
+    if (message.role === 'tool' && message.tool_call_id) {
+      const toolName = toolNameById.get(message.tool_call_id);
+      if (toolName === 'chercher_produits') {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+export const detectPriorCatalogueLookup = hasPriorCatalogueLookup;

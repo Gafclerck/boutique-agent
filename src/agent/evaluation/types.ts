@@ -18,3 +18,5 @@ export interface Verdict {
   readonly ok: boolean;
   readonly violations: readonly Violation[];
 }
+
+export type Evaluator = (input: EvaluationInput) => Verdict | Promise<Verdict>;

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { RodiumClient } from '../src/adapters/llm/rodium-client.js';
+import { evaluateReply } from '../src/agent/evaluation/index.js';
 import { SYSTEM_INSTRUCTIONS } from '../src/agent/instructions.js';
 import { type AgentRunResult, runAgent } from '../src/agent/loop.js';
 import { Shop } from '../src/domain/shop.js';
@@ -222,6 +223,7 @@ export async function main(): Promise<void> {
 
   let stoppedEarly = false;
   let earlyStopReason = '';
+  const evaluate = process.env.EVALUATION === 'off' ? undefined : evaluateReply;
 
   for (const scenario of args.scenarios) {
     if (stoppedEarly) break;
@@ -238,6 +240,7 @@ export async function main(): Promise<void> {
           tools,
           instructions: SYSTEM_INSTRUCTIONS,
           userMessage: scenario.userMessage,
+          evaluate,
         });
       } catch (err) {
         if (err instanceof MaxLlmCallsReachedError) {

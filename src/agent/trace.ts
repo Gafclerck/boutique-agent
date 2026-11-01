@@ -24,10 +24,24 @@ export interface ApprovalTraceEvent {
   readonly reason?: string;
 }
 
+export interface EvaluationTraceEvent {
+  readonly type: 'evaluation';
+  readonly step: number;
+  readonly ok: boolean;
+  readonly violations: readonly string[];
+  readonly retryNumber: number;
+}
+
+export interface RetryTraceEvent {
+  readonly type: 'retry';
+  readonly step: number;
+  readonly retryNumber: number;
+}
+
 export interface StopTraceEvent {
   readonly type: 'stop';
   readonly step: number;
-  readonly reason: 'answered' | 'max_steps' | 'empty_reply';
+  readonly reason: 'answered' | 'max_steps' | 'empty_reply' | 'evaluation_failed';
   readonly totalLlmCalls: number;
   readonly totalTokens: number;
 }
@@ -36,11 +50,13 @@ export type TraceEvent =
   | LlmCallTraceEvent
   | ToolCallTraceEvent
   | ApprovalTraceEvent
+  | EvaluationTraceEvent
+  | RetryTraceEvent
   | StopTraceEvent;
 
 /**
  * Formats trace events into a readable console string.
- * Renders one line per tool call, approval decision, LLM call, and final stop.
+ * Renders one line per tool call, approval decision, LLM call, evaluation, retry, and final stop.
  */
 export function formatTrace(events: readonly TraceEvent[]): string {
   const lines: string[] = [];
@@ -76,6 +92,22 @@ export function formatTrace(events: readonly TraceEvent[]): string {
         );
         break;
       }
+
+      case 'evaluation': {
+        const status = event.ok
+          ? 'CONFORME'
+          : `NON CONFORME (${event.violations.join(', ')})`;
+        lines.push(
+          `[Étape ${event.step}] Évaluation qualité (reprise ${event.retryNumber}) : ${status}`,
+        );
+        break;
+      }
+
+      case 'retry':
+        lines.push(
+          `[Étape ${event.step}] Reprise après critique qualité (reprise ${event.retryNumber})`,
+        );
+        break;
 
       case 'stop':
         lines.push(

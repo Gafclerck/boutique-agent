@@ -4,6 +4,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { ConsoleApproval } from '../adapters/approval/console-approval.js';
 import { RodiumClient } from '../adapters/llm/rodium-client.js';
 import { JsonFileStore } from '../adapters/store/json-file-store.js';
+import { evaluateReply } from '../agent/evaluation/index.js';
 import { SYSTEM_INSTRUCTIONS } from '../agent/instructions.js';
 import { runAgent } from '../agent/loop.js';
 import { formatTrace } from '../agent/trace.js';
@@ -26,6 +27,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const evaluate = process.env.EVALUATION === 'off' ? undefined : evaluateReply;
   const args = process.argv.slice(2);
   const dataFilePath = process.env.SHOP_DATA_FILE ?? 'data/shop.json';
   let store = new JsonFileStore(dataFilePath);
@@ -53,6 +55,7 @@ async function main(): Promise<void> {
         instructions: SYSTEM_INSTRUCTIONS,
         userMessage,
         approval,
+        evaluate,
       });
 
       console.log('--- Trace d\'exécution ---');
@@ -108,6 +111,7 @@ async function main(): Promise<void> {
           history,
           userMessage: trimmed,
           approval,
+          evaluate,
         });
 
         console.log('\n--- Trace d\'exécution ---');
