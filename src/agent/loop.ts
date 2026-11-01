@@ -1,3 +1,4 @@
+import type { ApprovalPort } from '../ports/approval.js';
 import type {
   ChatMessage,
   ChatResponse,
@@ -7,7 +8,12 @@ import type {
   ToolDefinition,
 } from '../ports/llm-client.js';
 import type { ToolRegistry } from '../tools/registry.js';
-import type { ToolCallTraceEvent, TraceEvent } from './trace.js';
+import { evaluateToolGuard } from './guards.js';
+import type {
+  ApprovalTraceEvent,
+  ToolCallTraceEvent,
+  TraceEvent,
+} from './trace.js';
 
 export interface RunAgentParams {
   readonly llm: LlmClient;
@@ -17,6 +23,7 @@ export interface RunAgentParams {
   readonly userMessage: string;
   readonly maxSteps?: number;
   readonly maxTokens?: number;
+  readonly approval?: ApprovalPort;
 }
 
 export interface AgentRunResult {
@@ -57,10 +64,16 @@ export async function executeSingleToolCall(
   tools: ToolRegistry,
   toolCall: ToolCall,
   step: number,
-): Promise<{ result: Record<string, unknown>; event: ToolCallTraceEvent }> {
+  approval?: ApprovalPort,
+): Promise<{
+  result: Record<string, unknown>;
+  event: ToolCallTraceEvent;
+  approvalEvent?: ApprovalTraceEvent;
+}> {
   const startTime = Date.now();
   let callArguments: unknown = toolCall.function.arguments;
   let result: Record<string, unknown>;
+  let approvalEvent: ApprovalTraceEvent | undefined;
 
   try {
     const parsedArgs = toolCall.function.arguments
@@ -75,12 +88,19 @@ export async function executeSingleToolCall(
         conseil: 'utiliser uniquement les outils déclarés',
       };
     } else {
-      try {
-        result = await tool.execute(parsedArgs);
-      } catch {
-        result = {
-          erreur: "erreur interne lors de l'exécution de l'outil",
-        };
+      const guard = await evaluateToolGuard(tool, parsedArgs, step, approval);
+      approvalEvent = guard.approvalEvent;
+
+      if (!guard.canExecute) {
+        result = guard.directResult ?? { erreur: 'action non autorisée' };
+      } else {
+        try {
+          result = await tool.execute(parsedArgs);
+        } catch {
+          result = {
+            erreur: "erreur interne lors de l'exécution de l'outil",
+          };
+        }
       }
     }
   } catch (err) {
@@ -102,6 +122,7 @@ export async function executeSingleToolCall(
       result,
       durationMs,
     },
+    approvalEvent,
   };
 }
 
@@ -153,11 +174,15 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       });
 
       for (const toolCall of toolCalls) {
-        const { result, event } = await executeSingleToolCall(
+        const { result, event, approvalEvent } = await executeSingleToolCall(
           params.tools,
           toolCall,
           step,
+          params.approval,
         );
+        if (approvalEvent) {
+          traceEvents.push(approvalEvent);
+        }
         traceEvents.push(event);
 
         messages.push({

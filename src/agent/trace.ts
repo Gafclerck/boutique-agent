@@ -16,6 +16,14 @@ export interface ToolCallTraceEvent {
   readonly durationMs: number;
 }
 
+export interface ApprovalTraceEvent {
+  readonly type: 'approval';
+  readonly step: number;
+  readonly tool: string;
+  readonly decision: boolean;
+  readonly reason?: string;
+}
+
 export interface StopTraceEvent {
   readonly type: 'stop';
   readonly step: number;
@@ -27,11 +35,12 @@ export interface StopTraceEvent {
 export type TraceEvent =
   | LlmCallTraceEvent
   | ToolCallTraceEvent
+  | ApprovalTraceEvent
   | StopTraceEvent;
 
 /**
  * Formats trace events into a readable console string.
- * Renders one line per tool call: step, name(arguments) -> result truncated to ~200 characters.
+ * Renders one line per tool call, approval decision, LLM call, and final stop.
  */
 export function formatTrace(events: readonly TraceEvent[]): string {
   const lines: string[] = [];
@@ -43,6 +52,15 @@ export function formatTrace(events: readonly TraceEvent[]): string {
           `[Étape ${event.step}] Appel LLM (${event.model}) : ${event.promptTokens} prompt + ${event.completionTokens} compl = ${event.totalTokens} tokens`,
         );
         break;
+
+      case 'approval': {
+        const decisionText = event.decision ? 'APPROUVÉE' : 'REFUSÉE';
+        const reasonText = event.reason ? ` (${event.reason})` : '';
+        lines.push(
+          `[Étape ${event.step}] Approbation (${event.tool}) : ${decisionText}${reasonText}`,
+        );
+        break;
+      }
 
       case 'tool_call': {
         const rawArgs =
