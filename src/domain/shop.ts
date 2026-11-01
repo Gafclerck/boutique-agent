@@ -340,13 +340,6 @@ export class Shop {
   }
 
   /**
-   * Alias for placeOrder for backward compatibility.
-   */
-  public async createOrder(params: OrderInput): Promise<OrderCreationResult> {
-    return this.placeOrder(params);
-  }
-
-  /**
    * Get all confirmed orders from the store.
    */
   public async getOrders(): Promise<readonly RecordedOrder[]> {

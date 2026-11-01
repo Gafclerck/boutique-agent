@@ -195,7 +195,7 @@ describe('Domain - Stock Decrement and Atomicity', () => {
     expect(initialCheck?.stock).toBe(14);
     expect(initialCheck?.categorie).toBe('tissu');
 
-    const result = await shop.createOrder({
+    const result = await shop.placeOrder({
       clientNom: 'Koffi Mensah',
       zone: 'Cotonou',
       articles: [{ ref: 'P01', quantite: 2 }],
@@ -222,7 +222,7 @@ describe('Domain - Stock Decrement and Atomicity', () => {
     expect(p01Initial).toBe(14);
     expect(p03Initial).toBe(0);
 
-    const result = await shop.createOrder({
+    const result = await shop.placeOrder({
       clientNom: 'Amina S.',
       zone: 'Calavi',
       articles: [
@@ -245,7 +245,7 @@ describe('Domain - Stock Decrement and Atomicity', () => {
 
   it('fails atomically if reference is unknown', async () => {
     const shop = new Shop();
-    const result = await shop.createOrder({
+    const result = await shop.placeOrder({
       clientNom: 'Amina',
       zone: 'Cotonou',
       articles: [
@@ -262,7 +262,7 @@ describe('Domain - Stock Decrement and Atomicity', () => {
 
   it('fails atomically if zone is not serviced', async () => {
     const shop = new Shop();
-    const result = await shop.createOrder({
+    const result = await shop.placeOrder({
       clientNom: 'Amina',
       zone: 'Lomé',
       articles: [{ ref: 'P01', quantite: 1 }],
