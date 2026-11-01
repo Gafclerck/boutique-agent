@@ -34,7 +34,7 @@ graph TD
   Ports["Ports (LlmClient, ShopStore, ApprovalPort)"]
   Adapters["Adapters (RodiumClient, FakeLlm, JsonFileStore, ConsoleApproval)"]
   Tools["Tools (5 outils de boutique)"]
-  Agent["Agent (loop, instructions, guards, trace)"]
+  Agent["Agent (loop, instructions, guards, trace, evaluation)"]
   Entrypoints["Entrypoints (CLI)"]
 
   Adapters --> Ports
@@ -56,7 +56,7 @@ graph TD
   - LLM : `RodiumClient` (API HTTP Rodium) et `FakeLlm` (bouchon déterministe).
   - Magasin de données : `JsonFileStore` (fichier JSON atomique) et `InMemoryStore` (tests rapides en mémoire).
   - Validation : `ConsoleApproval` (interaction synchrone CLI) et `FakeApproval` (décisions scriptées).
-- **`tools/` et `agent/` (le noyau)** coordonnent l'orchestration, appliquent les gardiens (`guards`) et produisent la trace.
+- **`tools/` et `agent/` (le noyau)** coordonnent l'orchestration, appliquent les gardiens (`guards`), gèrent l'évaluation qualité et produisent la trace.
 - **`entrypoints/`** initialise les adaptateurs et orchestre l'exécution (CLI interactif ou commande ponctuelle).
 - YAGNI strict : aucune dépendance superflue, pas de framework lourd.
 
@@ -115,16 +115,21 @@ RODIUM_BASE_URL=https://api.rodiumai.io/v1
 MAX_TOKENS=600
 TEMPERATURE=0
 SHOP_DATA_FILE=data/shop.json
+EVALUATION=on
 ```
 
 ### Commandes npm
-- **Mode interactif (CLI avec approbation humaine)** :
+- **Mode interactif (CLI avec approbation humaine et évaluation active)** :
   ```bash
   npm start
   ```
   Permet de discuter avec l'agent en continu. Commandes spéciales dans la session :
   - `/reset` : réinitialise l'historique de conversation et recharge le magasin persistant.
   - `/quit` : quitte la session.
+- **Désactivation temporaire de l'évaluation qualité** :
+  ```bash
+  EVALUATION=off npm start
+  ```
 - **Réinitialisation du fichier de données** :
   ```bash
   npm run data:reset
@@ -349,4 +354,77 @@ La fonction publique `evaluateReply(input: EvaluationInput): Verdict` applique q
 ### Limites des règles en code
 - **Pertinence des alternatives** : la règle `alternativeEnRupture` contrôle uniquement la présence factuelle d'un autre produit dont le stock vérifié est > 0. Elle ne juge pas de la pertinence stylistique, fonctionnelle ou commerciale de l'alternative (cette évaluation qualitative est déléguée au juge LLM).
 - **Affirmations verbales non couvertes** : une affirmation verbale infondée de l'agent prétendant qu'une commande est déjà enregistrée sans avoir appelé `creer_commande` n'est pas interceptée par ce jeu de 4 règles pures.
-- **Absence de branchement dans la boucle** : ces règles sont conçues comme des fonctions pures et autonomes (validées par tests unitaires). Elles **ne sont pas encore connectées à la boucle d'exécution de l'agent** ; cette intégration interviendra au prochain palier.
+- **Intégration dans le harness** : ces règles sont connectées à la boucle d'exécution de l'agent via le mécanisme de critique bornée détaillé à la section 10 ci-dessous.
+
+---
+
+## 10. Boucle de critique bornée (src/agent/loop.ts)
+
+L'évaluation qualité est branchée directement dans le harness d'exécution de l'agent (`runAgent`). Dès que le modèle de langage émet une réponse textuelle finale sans appel d'outil, l'évaluateur examine la conformité de la proposition avant toute restitution au client.
+
+### 10.1 Schéma du flux d'exécution
+
+```mermaid
+flowchart TD
+  Start(["Message utilisateur"]) --> CallLLM["Appel LLM (step)"]
+  CallLLM --> CheckTools{"tool_calls ?"}
+  
+  CheckTools -- "Oui" --> ExecTool["Exécution outils & gardes"]
+  ExecTool --> AppendTool["Ajout tool observations"]
+  AppendTool --> CheckSteps1{"step < maxSteps ?"}
+  CheckSteps1 -- "Oui" --> CallLLM
+  CheckSteps1 -- "Non" --> MaxStepsFallback["Repli max_steps"]
+  
+  CheckTools -- "Non" --> CheckEmpty{"Réponse vide ?"}
+  CheckEmpty -- "Oui" --> EmptyFallback["Repli empty_reply"]
+  CheckEmpty -- "Non" --> EvalEnabled{"evaluate fourni ?"}
+  
+  EvalEnabled -- "Non (ou EVALUATION=off)" --> AcceptReply["Accepter réponse (answered)"]
+  EvalEnabled -- "Oui" --> RunEval["Évaluation (evaluateReply)"]
+  
+  RunEval --> EvalVerdict{"Verdict ok ?"}
+  EvalVerdict -- "Oui" --> AcceptReply
+  EvalVerdict -- "Non" --> CheckRetries{"evaluationRetries < maxRetries et step < maxSteps ?"}
+  
+  CheckRetries -- "Oui" --> InjectCritique["Injecter brouillon + critique [Contrôle qualité]"]
+  InjectCritique --> NextStep["Incrémenter retry & step"]
+  NextStep --> CallLLM
+  
+  CheckRetries -- "Non (reprises épuisées)" --> EvalFallback["Repli evaluation_failed (brouillon masqué)"]
+  CheckRetries -- "Non (maxSteps atteint)" --> MaxStepsFallback
+```
+
+### 10.2 Bornes et garde-fous
+
+Pour prévenir tout risque de boucle infinie ou d'emballement budgétaire :
+1. **`maxEvaluationRetries` (défaut : 2, borné de 0 à 3)** : nombre maximal de reprises autorisées par tour de dialogue.
+2. **`maxSteps` (défaut : 8, borné de 1 à 10)** : plafond dur global sur l'ensemble du tour. Chaque appel LLM — y compris lors d'une reprise après critique — consomme une étape du compteur global. Si `maxSteps` est atteint pendant une reprise, la boucle s'arrête avec le motif `max_steps`.
+
+### 10.3 Historique propre (`result.messages`)
+
+Pour éviter de polluer le contexte du LLM lors des tours de conversation suivants :
+- **Pendant l'évaluation** : le brouillon fautif (rôle `assistant`) et la critique qualité (rôle `user`, préfixée par `[Contrôle qualité]`) sont injectés temporairement dans la copie de travail pour guider l'autocorrection du modèle.
+- **En sortie (`result.messages`)** : tous les brouillons rejetés et messages de contrôle qualité sont strictement filtrés. L'historique restitué au CLI et aux tours futurs ne contient que le message utilisateur initial, les appels et résultats d'outils (y compris ceux exécutés pendant les reprises), et la réponse finale acceptée (ou le message de repli).
+- **Traçabilité (`result.trace`)** : la trace conserve l'historique exhaustif des événements (`llm_call`, `tool_call`, `approval`, `evaluation`, `retry`, `stop`).
+
+### 10.4 Messages de repli sécurisés (Fail Closed)
+
+Si un brouillon ne parvient pas à satisfaire les critères de qualité après épuisement des reprises (`evaluationRetries >= maxRetries`) :
+- L'agent s'arrête avec `stopReason: "evaluation_failed"`.
+- Aucun fragment du brouillon fautif (prix inventé, rupture ignorée) n'est jamais divulgué au client.
+- L'agent renvoie le message standard `EVALUATION_FALLBACK_MESSAGE` :
+  > *"Je ne suis pas en mesure de confirmer cette information pour le moment. Pouvez-vous reformuler votre demande ?"* (sans aucun nombre).
+- Aucun contrôle qualité n'est exécuté sur les messages de repli (`empty_reply`, `max_steps`, `evaluation_failed`).
+
+### 10.5 Désactivation pour comparaison (`EVALUATION=off`)
+
+Les points d'entrée applicatifs (`cli.ts` et `live-check.ts`) fournissent `evaluateReply` par défaut. Il est possible de désactiver complètement l'évaluation pour mesurer les écarts avant/après :
+```bash
+EVALUATION=off npm start
+EVALUATION=off LIVE=1 npm run live -- --dry-run
+```
+
+### 10.6 Coût d'une reprise et analyse des faux positifs
+
+- **Coût unitaire d'une reprise** : chaque reprise consomme un appel LLM supplémentaire ainsi que les tokens de prompt associés (brouillon + critique injectée).
+- **Recommandation opérationnelle** : avant d'assouplir une règle d'évaluation (ou d'en modifier les seuils), il est vivement recommandé de journaliser en production les événements `evaluation` (`ok: false`, règles violées dans `lastViolations`) afin de quantifier le ratio entre vraies anomalies interceptées (hallucinations, omissions de stock) et faux positifs (formulations atypiques mais correctes).
