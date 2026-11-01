@@ -136,4 +136,45 @@ describe('Shop - Persistence & Preview', () => {
     expect(orders2[0]?.numero_commande).toBe('CMD-1');
     expect(orders2[0]?.total_fcfa).toBe(46000);
   });
+
+  it('deux placeOrder concurrents pour 1 robe (P05) avec stock initial à 1 -> exactement un succès, un stock insuffisant et stock final 0', async () => {
+    const store = new JsonFileStore(filePath);
+    const shop = new Shop(store);
+
+    await store.transact((state) => {
+      state.stock['P05'] = 1;
+    });
+
+    const [orderA, orderB] = await Promise.all([
+      shop.placeOrder({
+        clientNom: 'Client A',
+        zone: 'Cotonou',
+        articles: [{ ref: 'P05', quantite: 1 }],
+      }),
+      shop.placeOrder({
+        clientNom: 'Client B',
+        zone: 'Calavi',
+        articles: [{ ref: 'P05', quantite: 1 }],
+      }),
+    ]);
+
+    const successes = [orderA, orderB].filter((r) => r.success);
+    const failures = [orderA, orderB].filter((r) => !r.success);
+
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+
+    const failure = failures[0]!;
+    expect(failure.reason).toBe('INSUFFICIENT_STOCK');
+    if (failure.reason === 'INSUFFICIENT_STOCK') {
+      expect(failure.message).toContain('stock insuffisant');
+      expect(failure.stock_disponible).toBe(0);
+    }
+
+    const finalStock = (await shop.checkStock('P05'))?.stock;
+    expect(finalStock).toBe(0);
+
+    const orders = await shop.getOrders();
+    expect(orders).toHaveLength(1);
+  });
 });

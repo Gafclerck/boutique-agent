@@ -276,4 +276,31 @@ describe('Domain - Stock Decrement and Atomicity', () => {
     }
     expect((await shop.checkStock('P01'))?.stock).toBe(14);
   });
+
+  it('gère deux placeOrder concurrents sur P05 avec stock initial 1 : un seul succès et stock final 0', async () => {
+    const shop = new Shop();
+    await shop.getStore().transact((state) => {
+      state.stock['P05'] = 1;
+    });
+
+    const [resA, resB] = await Promise.all([
+      shop.placeOrder({
+        clientNom: 'A',
+        zone: 'Cotonou',
+        articles: [{ ref: 'P05', quantite: 1 }],
+      }),
+      shop.placeOrder({
+        clientNom: 'B',
+        zone: 'Calavi',
+        articles: [{ ref: 'P05', quantite: 1 }],
+      }),
+    ]);
+
+    const successes = [resA, resB].filter((r) => r.success);
+    const failures = [resA, resB].filter((r) => !r.success);
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.reason).toBe('INSUFFICIENT_STOCK');
+    expect((await shop.checkStock('P05'))?.stock).toBe(0);
+  });
 });
