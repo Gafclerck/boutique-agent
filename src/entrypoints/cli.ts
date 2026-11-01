@@ -1,7 +1,9 @@
 import 'dotenv/config';
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
+import { ConsoleApproval } from '../adapters/approval/console-approval.js';
 import { RodiumClient } from '../adapters/llm/rodium-client.js';
+import { JsonFileStore } from '../adapters/store/json-file-store.js';
 import { SYSTEM_INSTRUCTIONS } from '../agent/instructions.js';
 import { runAgent } from '../agent/loop.js';
 import { formatTrace } from '../agent/trace.js';
@@ -25,19 +27,32 @@ async function main(): Promise<void> {
   }
 
   const args = process.argv.slice(2);
-  let shop = new Shop();
+  const dataFilePath = process.env.SHOP_DATA_FILE ?? 'data/shop.json';
+  let store = new JsonFileStore(dataFilePath);
+  let shop = new Shop(store);
   let tools = createDefaultRegistry(shop);
 
   // One-off question mode:
   if (args.length > 0) {
     const userMessage = args.join(' ').trim();
     console.log(`\nClient : ${userMessage}\n`);
+
+    const isInteractive = Boolean(input.isTTY);
+    let rlOneOff: readline.Interface | undefined;
+    let approval: ConsoleApproval | undefined;
+
+    if (isInteractive) {
+      rlOneOff = readline.createInterface({ input, output });
+      approval = new ConsoleApproval((q) => rlOneOff!.question(q));
+    }
+
     try {
       const result = await runAgent({
         llm,
         tools,
         instructions: SYSTEM_INSTRUCTIONS,
         userMessage,
+        approval,
       });
 
       console.log('--- Trace d\'exécution ---');
@@ -47,16 +62,20 @@ async function main(): Promise<void> {
     } catch (err) {
       console.error('Erreur lors de l\'exécution :', err);
       process.exit(1);
+    } finally {
+      rlOneOff?.close();
     }
     return;
   }
 
-  // Interactive mode (readline)
+  // Interactive mode (single readline interface for dialogue & approval)
   const rl = readline.createInterface({ input, output });
+  const approval = new ConsoleApproval((question) => rl.question(question));
   const history: ChatMessage[] = [];
 
   console.log('='.repeat(65));
   console.log('  Boutique d\'Afi - Agent Vendeur (Marché Dantokpa, Bénin)');
+  console.log('  Stock persistant : ' + dataFilePath);
   console.log('  Commandes spéciales : /reset (réinitialiser) | /quit (quitter)');
   console.log('='.repeat(65) + '\n');
 
@@ -74,9 +93,10 @@ async function main(): Promise<void> {
 
       if (trimmed === '/reset') {
         history.length = 0;
-        shop = new Shop();
+        store = new JsonFileStore(dataFilePath);
+        shop = new Shop(store);
         tools = createDefaultRegistry(shop);
-        console.log('\n[Système] Conversation et stock réinitialisés.\n');
+        console.log('\n[Système] Conversation rechargée depuis le magasin persistant.\n');
         continue;
       }
 
@@ -87,6 +107,7 @@ async function main(): Promise<void> {
           instructions: SYSTEM_INSTRUCTIONS,
           history,
           userMessage: trimmed,
+          approval,
         });
 
         console.log('\n--- Trace d\'exécution ---');
@@ -94,8 +115,6 @@ async function main(): Promise<void> {
         console.log('-------------------------\n');
         console.log(`Agent > ${result.reply}\n`);
 
-        // result.messages contains the complete conversation including the final assistant reply.
-        // Update history with messages after system instruction without duplicate assistant reply.
         history.length = 0;
         history.push(...result.messages.slice(1));
       } catch (err) {
