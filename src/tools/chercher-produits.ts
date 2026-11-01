@@ -1,11 +1,12 @@
-import type { Shop } from '../domain/shop.js';
+import { InvalidKeywordError, type Shop } from '../domain/shop.js';
+import type { Product } from '../domain/catalogue.js';
 import type { ToolDefinition } from '../ports/llm-client.js';
 import type { Tool } from './types.js';
 
 export class ChercherProduitsTool implements Tool {
   public readonly name = 'chercher_produits';
   public readonly description =
-    'Cherche des produits du catalogue par mot-clé. Le mot-clé peut être un produit (pagne, robe) ou une catégorie (tissu, vetement, accessoire, soin). Ne donne pas le stock : appeler verifier_stock ensuite pour chaque produit concerné.';
+    "Cherche des produits du catalogue par mot-clé. Un ou deux mots suffisent (ex : pagne, sac raphia, robe wax). Si rien ne correspond, réessayer une fois avec un mot plus général ou une catégorie avant d'interroger le client. Ne donne pas le stock : appeler verifier_stock ensuite pour chaque produit concerné.";
 
   public readonly parameters = {
     type: 'object',
@@ -13,7 +14,7 @@ export class ChercherProduitsTool implements Tool {
       mot_cle: {
         type: 'string',
         description:
-          'Le mot-clé peut être un produit (pagne, robe) ou une catégorie (tissu, vetement, accessoire, soin).',
+          "Un ou deux mots suffisent (ex : pagne, sac raphia, robe wax). Si rien ne correspond, réessayer une fois avec un mot plus général ou une catégorie avant d'interroger le client.",
       },
     },
     required: ['mot_cle'],
@@ -26,8 +27,7 @@ export class ChercherProduitsTool implements Tool {
       typeof args !== 'object' ||
       args === null ||
       !('mot_cle' in args) ||
-      typeof (args as { mot_cle: unknown }).mot_cle !== 'string' ||
-      (args as { mot_cle: string }).mot_cle.trim().length === 0
+      typeof (args as { mot_cle: unknown }).mot_cle !== 'string'
     ) {
       return {
         erreur: 'argument invalide',
@@ -36,12 +36,29 @@ export class ChercherProduitsTool implements Tool {
     }
 
     const motCle = (args as { mot_cle: string }).mot_cle.trim();
-    const results = this.shop.searchProducts(motCle);
+    let results: Product[];
+
+    try {
+      results = this.shop.searchProducts(motCle);
+    } catch (err) {
+      if (
+        err instanceof InvalidKeywordError ||
+        (err instanceof Error && err.message === 'mot-clé invalide')
+      ) {
+        return {
+          erreur: 'mot-clé invalide',
+          conseil:
+            'un ou deux mots suffisent (ex : pagne, sac raphia, robe wax) ou une catégorie (tissu, vetement, accessoire, soin)',
+        };
+      }
+      throw err;
+    }
 
     if (results.length === 0) {
       return {
         erreur: `aucun produit pour ${motCle}`,
-        conseil: 'essayer un mot plus général (ex : pagne, robe, sac)',
+        conseil:
+          'essayer un mot plus général ou une catégorie (tissu, vetement, accessoire, soin)',
       };
     }
 

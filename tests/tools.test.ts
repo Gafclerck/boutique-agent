@@ -48,22 +48,49 @@ describe('Tool - chercher_produits', () => {
     });
   });
 
-  it('has updated description mentioning categories and products', () => {
+  it('has updated description with multi-word and category advice', () => {
     const shop = new Shop();
     const tool = new ChercherProduitsTool(shop);
     expect(tool.description).toContain(
-      'Le mot-clé peut être un produit (pagne, robe) ou une catégorie (tissu, vetement, accessoire, soin).',
+      "Un ou deux mots suffisent (ex : pagne, sac raphia, robe wax). Si rien ne correspond, réessayer une fois avec un mot plus général ou une catégorie avant d'interroger le client.",
     );
   });
 
-  it('returns exact observation error when no product matches', async () => {
+  it('returns exact observation error when no product matches with enriched advice', async () => {
     const shop = new Shop();
     const tool = new ChercherProduitsTool(shop);
 
     const result = await tool.execute({ mot_cle: 'chapeau' });
     expect(result).toEqual({
       erreur: 'aucun produit pour chapeau',
-      conseil: 'essayer un mot plus général (ex : pagne, robe, sac)',
+      conseil:
+        'essayer un mot plus général ou une catégorie (tissu, vetement, accessoire, soin)',
+    });
+  });
+
+  it('returns observation error "mot-clé invalide" when keyword is empty or only stop-words', async () => {
+    const shop = new Shop();
+    const tool = new ChercherProduitsTool(shop);
+
+    const emptyResult = await tool.execute({ mot_cle: '' });
+    expect(emptyResult).toEqual({
+      erreur: 'mot-clé invalide',
+      conseil:
+        'un ou deux mots suffisent (ex : pagne, sac raphia, robe wax) ou une catégorie (tissu, vetement, accessoire, soin)',
+    });
+
+    const stopWordResult = await tool.execute({ mot_cle: 'en' });
+    expect(stopWordResult).toEqual({
+      erreur: 'mot-clé invalide',
+      conseil:
+        'un ou deux mots suffisent (ex : pagne, sac raphia, robe wax) ou une catégorie (tissu, vetement, accessoire, soin)',
+    });
+
+    const multiStopWordResult = await tool.execute({ mot_cle: 'de la' });
+    expect(multiStopWordResult).toEqual({
+      erreur: 'mot-clé invalide',
+      conseil:
+        'un ou deux mots suffisent (ex : pagne, sac raphia, robe wax) ou une catégorie (tissu, vetement, accessoire, soin)',
     });
   });
 
@@ -72,7 +99,27 @@ describe('Tool - chercher_produits', () => {
     const tool = new ChercherProduitsTool(shop);
 
     const result = await tool.execute({});
-    expect(result.erreur).toBe('argument invalide');
+    expect(result).toEqual({
+      erreur: 'argument invalide',
+      conseil: 'fournir un mot-clé sous la forme {"mot_cle": "nom_du_produit"}',
+    });
+  });
+
+  it('finds products with multi-word search (e.g. "sac raphia")', async () => {
+    const shop = new Shop();
+    const tool = new ChercherProduitsTool(shop);
+
+    const result = await tool.execute({ mot_cle: 'sac raphia' });
+    expect(result).toEqual({
+      produits: [
+        {
+          ref: 'P03',
+          nom: 'Sac en raphia',
+          categorie: 'accessoire',
+          prix_fcfa: 7500,
+        },
+      ],
+    });
   });
 });
 
