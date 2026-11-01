@@ -5,7 +5,7 @@ import {
   normalizeText,
 } from '../src/domain/catalogue.js';
 import { calculateTotal } from '../src/domain/pricing.js';
-import { Shop } from '../src/domain/shop.js';
+import { Shop, InvalidKeywordError } from '../src/domain/shop.js';
 
 describe('Domain - Catalogue and Text Normalization', () => {
   it('normalizes accents, casing, and whitespace', () => {
@@ -83,10 +83,64 @@ describe('Domain - Shop Search', () => {
     expect(results[0]?.categorie).toBe('soin');
   });
 
+  it('finds products with multi-words, stop-words ignored, and order indifferent', () => {
+    const shop = new Shop();
+
+    // "sac raphia" -> P03
+    const sacRaphia = shop.searchProducts('sac raphia');
+    expect(sacRaphia.map((p) => p.ref)).toEqual(['P03']);
+
+    // "sac en raphia" -> P03
+    const sacEnRaphia = shop.searchProducts('sac en raphia');
+    expect(sacEnRaphia.map((p) => p.ref)).toEqual(['P03']);
+
+    // "raphia" -> P03
+    const raphia = shop.searchProducts('raphia');
+    expect(raphia.map((p) => p.ref)).toEqual(['P03']);
+
+    // "Sacs" -> P03
+    const sacs = shop.searchProducts('Sacs');
+    expect(sacs.map((p) => p.ref)).toEqual(['P03']);
+
+    // "robe wax" -> P05
+    const robeWax = shop.searchProducts('robe wax');
+    expect(robeWax.map((p) => p.ref)).toEqual(['P05']);
+
+    // "wax robe" -> P05
+    const waxRobe = shop.searchProducts('wax robe');
+    expect(waxRobe.map((p) => p.ref)).toEqual(['P05']);
+
+    // "beurre karite" -> P06
+    const beurreKarite = shop.searchProducts('beurre karite');
+    expect(beurreKarite.map((p) => p.ref)).toEqual(['P06']);
+
+    // "bazin" -> P02
+    const bazin = shop.searchProducts('bazin');
+    expect(bazin.map((p) => p.ref)).toEqual(['P02']);
+
+    // "accessoires" -> P03, P04
+    const accessoires = shop.searchProducts('accessoires');
+    expect(accessoires.map((p) => p.ref).sort()).toEqual(['P03', 'P04']);
+
+    // "pagne wax" -> P01
+    const pagneWax = shop.searchProducts('pagne wax');
+    expect(pagneWax.map((p) => p.ref)).toEqual(['P01']);
+  });
+
   it('returns empty array when keyword does not match anything', () => {
     const shop = new Shop();
+    expect(shop.searchProducts('sac wax')).toEqual([]);
     expect(shop.searchProducts('ordinateur')).toEqual([]);
-    expect(shop.searchProducts('')).toEqual([]);
+  });
+
+  it('throws InvalidKeywordError when keyword is empty or only stop-words', () => {
+    const shop = new Shop();
+    expect(() => shop.searchProducts('')).toThrow(InvalidKeywordError);
+    expect(() => shop.searchProducts('')).toThrow('mot-clé invalide');
+    expect(() => shop.searchProducts('en')).toThrow(InvalidKeywordError);
+    expect(() => shop.searchProducts('en')).toThrow('mot-clé invalide');
+    expect(() => shop.searchProducts('de la')).toThrow(InvalidKeywordError);
+    expect(() => shop.searchProducts('de la')).toThrow('mot-clé invalide');
   });
 });
 

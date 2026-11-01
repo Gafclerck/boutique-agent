@@ -32,12 +32,43 @@ export const INITIAL_ZONES: readonly Zone[] = [
 
 export const CANONICAL_ZONE_NAMES: readonly string[] = INITIAL_ZONES.map((z) => z.zone);
 
+export const STOP_WORDS: ReadonlySet<string> = new Set([
+  'de',
+  'du',
+  'des',
+  'd',
+  'le',
+  'la',
+  'les',
+  'l',
+  'un',
+  'une',
+  'en',
+  'et',
+  'a',
+  'au',
+  'aux',
+  'pour',
+  'sur',
+]);
+
 export function normalizeText(text: string): string {
   return text
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .trim();
+}
+
+export function extractWords(text: string): string[] {
+  const normalized = normalizeText(text);
+  if (!normalized) return [];
+  return normalized.split(/[^a-z0-9]+/i).filter((w) => w.length > 0);
+}
+
+export function filterSignificantWords(text: string): string[] {
+  const words = extractWords(text);
+  return words.filter((w) => !STOP_WORDS.has(w));
 }
 
 /**
@@ -61,4 +92,16 @@ export function getSearchStems(keyword: string): string[] {
   }
 
   return Array.from(stems);
+}
+
+export function wordMatches(queryWord: string, targetWords: readonly string[]): boolean {
+  const queryStems = getSearchStems(queryWord);
+  for (const target of targetWords) {
+    if (queryWord === target) return true;
+    const targetStems = getSearchStems(target);
+    if (queryStems.some((qs) => targetStems.includes(qs))) {
+      return true;
+    }
+  }
+  return false;
 }

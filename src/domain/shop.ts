@@ -3,11 +3,20 @@ import {
   INITIAL_ZONES,
   CANONICAL_ZONE_NAMES,
   normalizeText,
-  getSearchStems,
+  extractWords,
+  filterSignificantWords,
+  wordMatches,
   type Product,
   type Zone,
 } from './catalogue.js';
 import { calculateTotal, type PricedItem } from './pricing.js';
+
+export class InvalidKeywordError extends Error {
+  constructor(message = 'mot-clé invalide') {
+    super(message);
+    this.name = 'InvalidKeywordError';
+  }
+}
 
 export interface OrderItem {
   readonly ref: string;
@@ -80,23 +89,29 @@ export class Shop {
   }
 
   /**
-   * Search catalogue products by keyword (case & accent insensitive, simple plural tolerated).
-   * Matches product name OR category.
+   * Search catalogue products by keyword (multi-word, stop-words ignored, plural tolerated, order indifferent).
+   * A product matches if EVERY remaining word matches a word of the product's name OR category.
+   * Throws InvalidKeywordError if keyword is empty or composed only of stop-words.
    */
   public searchProducts(keyword: string): Product[] {
-    const stems = getSearchStems(keyword);
-    if (stems.length === 0) return [];
+    const significantWords = filterSignificantWords(keyword);
+    if (significantWords.length === 0) {
+      throw new InvalidKeywordError('mot-clé invalide');
+    }
 
     const matches: Product[] = [];
 
     for (const product of this.products.values()) {
-      const normalizedNom = normalizeText(product.nom);
-      const normalizedCategorie = normalizeText(product.categorie);
-      const isMatch = stems.some((stem) => {
-        return normalizedNom.includes(stem) || normalizedCategorie.includes(stem);
-      });
+      const productWords = [
+        ...extractWords(product.nom),
+        ...extractWords(product.categorie),
+      ];
 
-      if (isMatch) {
+      const allWordsMatch = significantWords.every((word) =>
+        wordMatches(word, productWords),
+      );
+
+      if (allWordsMatch) {
         matches.push({
           ref: product.ref,
           nom: product.nom,
