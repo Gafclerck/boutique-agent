@@ -12,7 +12,7 @@ import {
   scenarioS1,
   scenarioS2,
   scenarioS3,
-} from './scenarios/scenarios.js';
+} from '../eval/scenarios.js';
 
 function createMockRatesFetch(): typeof fetch {
   return (async () => {

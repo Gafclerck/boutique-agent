@@ -1,5 +1,5 @@
-import type { AgentRunResult } from '../../src/agent/loop.js';
-import type { ToolCallTraceEvent } from '../../src/agent/trace.js';
+import type { AgentRunResult } from '../src/agent/loop.js';
+import type { ToolCallTraceEvent } from '../src/agent/trace.js';
 
 export interface ScenarioCheckResult {
   readonly ok: boolean;

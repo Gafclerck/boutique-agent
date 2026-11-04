@@ -12,7 +12,7 @@ import {
   type Scenario,
   SCENARIOS,
   SCENARIOS_BY_ID,
-} from '../tests/scenarios/scenarios.js';
+} from '../eval/scenarios.js';
 
 export class MaxLlmCallsReachedError extends Error {
   constructor(message: string) {

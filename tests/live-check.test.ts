@@ -6,7 +6,7 @@ import {
   MaxLlmCallsReachedError,
   parseArgs,
 } from '../scripts/live-check.js';
-import { SCENARIOS } from './scenarios/scenarios.js';
+import { SCENARIOS } from '../eval/scenarios.js';
 
 describe('Script live-check : Parseur d\'arguments et client plafonné', () => {
   describe('parseArgs()', () => {
