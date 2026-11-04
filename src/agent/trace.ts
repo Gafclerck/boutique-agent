@@ -1,3 +1,5 @@
+import type { TokenUsage } from '../ports/llm-client.js';
+
 export interface LlmCallTraceEvent {
   readonly type: 'llm_call';
   readonly step: number;
@@ -46,13 +48,32 @@ export interface StopTraceEvent {
   readonly totalTokens: number;
 }
 
+export interface JudgeCallTraceEvent {
+  readonly type: 'judge_call';
+  readonly step?: number;
+  readonly model: string;
+  readonly tokens: number;
+  readonly verdict: 'ok' | 'pas_encore';
+  readonly durationMs: number;
+  readonly duration?: number;
+  readonly usage?: TokenUsage;
+}
+
+export interface JudgeErrorTraceEvent {
+  readonly type: 'judge_error';
+  readonly step?: number;
+  readonly reason: string;
+}
+
 export type TraceEvent =
   | LlmCallTraceEvent
   | ToolCallTraceEvent
   | ApprovalTraceEvent
   | EvaluationTraceEvent
   | RetryTraceEvent
-  | StopTraceEvent;
+  | StopTraceEvent
+  | JudgeCallTraceEvent
+  | JudgeErrorTraceEvent;
 
 /**
  * Formats trace events into a readable console string.
@@ -113,6 +134,16 @@ export function formatTrace(events: readonly TraceEvent[]): string {
         lines.push(
           `[Fin] Arrêt : ${event.reason} | Appels LLM : ${event.totalLlmCalls} | Tokens cumulés : ${event.totalTokens}`,
         );
+        break;
+
+      case 'judge_call':
+        lines.push(
+          `[Juge] Appel LLM (${event.model}) : ${event.tokens} tokens, verdict = ${event.verdict} (${event.durationMs}ms)`,
+        );
+        break;
+
+      case 'judge_error':
+        lines.push(`[Juge] Échec ouvert (erreur ignorée) : ${event.reason}`);
         break;
     }
   }

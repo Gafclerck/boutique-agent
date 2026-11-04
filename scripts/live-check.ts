@@ -1,6 +1,11 @@
 import 'dotenv/config';
 import { RodiumClient } from '../src/adapters/llm/rodium-client.js';
-import { evaluateReply } from '../src/agent/evaluation/index.js';
+import {
+  composeEvaluators,
+  createJudgeEvaluator,
+  evaluateReply,
+  type Evaluator,
+} from '../src/agent/evaluation/index.js';
 import { SYSTEM_INSTRUCTIONS } from '../src/agent/instructions.js';
 import { type AgentRunResult, runAgent } from '../src/agent/loop.js';
 import { Shop } from '../src/domain/shop.js';
@@ -223,7 +228,21 @@ export async function main(): Promise<void> {
 
   let stoppedEarly = false;
   let earlyStopReason = '';
-  const evaluate = process.env.EVALUATION === 'off' ? undefined : evaluateReply;
+  let evaluate: Evaluator | undefined;
+  if (process.env.EVALUATION === 'off') {
+    evaluate = undefined;
+  } else if (process.env.JUDGE === 'on') {
+    const judgeModel = process.env.JUDGE_MODEL || model;
+    const judgeLlm = new RodiumClient({
+      apiKey,
+      model: judgeModel,
+      baseUrl,
+    });
+    const judge = createJudgeEvaluator({ llm: judgeLlm });
+    evaluate = composeEvaluators(evaluateReply, judge);
+  } else {
+    evaluate = evaluateReply;
+  }
 
   for (const scenario of args.scenarios) {
     if (stoppedEarly) break;
