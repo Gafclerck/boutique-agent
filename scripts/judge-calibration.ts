@@ -166,6 +166,7 @@ export async function runCalibration(argv: readonly string[] = process.argv.slic
     const toolCalls: ToolCallTraceEvent[] = c.toolResults.map((t) => ({
       type: 'tool_call',
       step: 1,
+      agent: 'agent',
       name: t.outil,
       arguments: t.arguments ?? {},
       result: t.resultat,

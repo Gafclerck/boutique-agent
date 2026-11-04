@@ -49,7 +49,10 @@ export interface ChatRequest {
   readonly toolChoice?: 'auto' | 'none' | 'required';
   readonly maxTokens?: number;
   readonly temperature?: number;
+  readonly role?: string;
 }
+
+export type LlmRequest = ChatRequest;
 
 export interface LlmClient {
   chat(request: ChatRequest): Promise<ChatResponse>;

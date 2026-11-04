@@ -47,6 +47,7 @@ function makeToolCallEvent(
   return {
     type: 'tool_call',
     step: 1,
+    agent: 'agent',
     name,
     arguments: args,
     result,

@@ -156,6 +156,7 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): Evaluator 
         traceEvents: [
           {
             type: 'judge_error',
+            agent: 'juge',
             reason: `Échec appel LLM juge : ${reason}`,
           },
         ],
@@ -181,6 +182,7 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): Evaluator 
         traceEvents: [
           {
             type: 'judge_error',
+            agent: 'juge',
             reason: 'JSON invalide dans la réponse du juge',
           },
         ],
@@ -198,6 +200,7 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): Evaluator 
         traceEvents: [
           {
             type: 'judge_error',
+            agent: 'juge',
             reason: `Verdict inconnu du juge : "${String(verdictVal)}"`,
           },
         ],
@@ -213,6 +216,7 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): Evaluator 
         traceEvents: [
           {
             type: 'judge_call',
+          agent: 'juge',
             model: response.model,
             tokens,
             verdict: 'ok',
@@ -245,6 +249,7 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): Evaluator 
       traceEvents: [
         {
           type: 'judge_call',
+          agent: 'juge',
           model: response.model,
           tokens,
           verdict: 'pas_encore',

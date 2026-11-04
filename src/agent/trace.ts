@@ -1,6 +1,11 @@
 import type { TokenUsage } from '../ports/llm-client.js';
 
-export interface LlmCallTraceEvent {
+export interface BaseTraceEvent {
+  readonly agent: string;
+  readonly nested?: boolean;
+}
+
+export interface LlmCallTraceEvent extends BaseTraceEvent {
   readonly type: 'llm_call';
   readonly step: number;
   readonly promptTokens: number;
@@ -9,7 +14,7 @@ export interface LlmCallTraceEvent {
   readonly model: string;
 }
 
-export interface ToolCallTraceEvent {
+export interface ToolCallTraceEvent extends BaseTraceEvent {
   readonly type: 'tool_call';
   readonly step: number;
   readonly name: string;
@@ -18,7 +23,7 @@ export interface ToolCallTraceEvent {
   readonly durationMs: number;
 }
 
-export interface ApprovalTraceEvent {
+export interface ApprovalTraceEvent extends BaseTraceEvent {
   readonly type: 'approval';
   readonly step: number;
   readonly tool: string;
@@ -26,7 +31,7 @@ export interface ApprovalTraceEvent {
   readonly reason?: string;
 }
 
-export interface EvaluationTraceEvent {
+export interface EvaluationTraceEvent extends BaseTraceEvent {
   readonly type: 'evaluation';
   readonly step: number;
   readonly ok: boolean;
@@ -34,21 +39,26 @@ export interface EvaluationTraceEvent {
   readonly retryNumber: number;
 }
 
-export interface RetryTraceEvent {
+export interface RetryTraceEvent extends BaseTraceEvent {
   readonly type: 'retry';
   readonly step: number;
   readonly retryNumber: number;
 }
 
-export interface StopTraceEvent {
+export interface StopTraceEvent extends BaseTraceEvent {
   readonly type: 'stop';
   readonly step: number;
-  readonly reason: 'answered' | 'max_steps' | 'empty_reply' | 'evaluation_failed';
+  readonly reason:
+    | 'answered'
+    | 'max_steps'
+    | 'empty_reply'
+    | 'evaluation_failed'
+    | 'budget_exceeded';
   readonly totalLlmCalls: number;
   readonly totalTokens: number;
 }
 
-export interface JudgeCallTraceEvent {
+export interface JudgeCallTraceEvent extends BaseTraceEvent {
   readonly type: 'judge_call';
   readonly step?: number;
   readonly model: string;
@@ -59,7 +69,7 @@ export interface JudgeCallTraceEvent {
   readonly usage?: TokenUsage;
 }
 
-export interface JudgeErrorTraceEvent {
+export interface JudgeErrorTraceEvent extends BaseTraceEvent {
   readonly type: 'judge_error';
   readonly step?: number;
   readonly reason: string;
@@ -78,15 +88,19 @@ export type TraceEvent =
 /**
  * Formats trace events into a readable console string.
  * Renders one line per tool call, approval decision, LLM call, evaluation, retry, and final stop.
+ * Displays the agent role and indents nested events.
  */
 export function formatTrace(events: readonly TraceEvent[]): string {
   const lines: string[] = [];
 
   for (const event of events) {
+    const indent = event.nested ? '  ' : '';
+    const prefix = `${indent}[${event.agent}] `;
+
     switch (event.type) {
       case 'llm_call':
         lines.push(
-          `[Étape ${event.step}] Appel LLM (${event.model}) : ${event.promptTokens} prompt + ${event.completionTokens} compl = ${event.totalTokens} tokens`,
+          `${prefix}[Étape ${event.step}] Appel LLM (${event.model}) : ${event.promptTokens} prompt + ${event.completionTokens} compl = ${event.totalTokens} tokens`,
         );
         break;
 
@@ -94,7 +108,7 @@ export function formatTrace(events: readonly TraceEvent[]): string {
         const decisionText = event.decision ? 'APPROUVÉE' : 'REFUSÉE';
         const reasonText = event.reason ? ` (${event.reason})` : '';
         lines.push(
-          `[Étape ${event.step}] Approbation (${event.tool}) : ${decisionText}${reasonText}`,
+          `${prefix}[Étape ${event.step}] Approbation (${event.tool}) : ${decisionText}${reasonText}`,
         );
         break;
       }
@@ -109,7 +123,7 @@ export function formatTrace(events: readonly TraceEvent[]): string {
           rawResult.length > 200 ? `${rawResult.slice(0, 197)}...` : rawResult;
 
         lines.push(
-          `[Étape ${event.step}] ${event.name}(${rawArgs}) -> ${truncatedResult} (${event.durationMs}ms)`,
+          `${prefix}[Étape ${event.step}] ${event.name}(${rawArgs}) -> ${truncatedResult} (${event.durationMs}ms)`,
         );
         break;
       }
@@ -119,31 +133,31 @@ export function formatTrace(events: readonly TraceEvent[]): string {
           ? 'CONFORME'
           : `NON CONFORME (${event.violations.join(', ')})`;
         lines.push(
-          `[Étape ${event.step}] Évaluation qualité (reprise ${event.retryNumber}) : ${status}`,
+          `${prefix}[Étape ${event.step}] Évaluation qualité (reprise ${event.retryNumber}) : ${status}`,
         );
         break;
       }
 
       case 'retry':
         lines.push(
-          `[Étape ${event.step}] Reprise après critique qualité (reprise ${event.retryNumber})`,
+          `${prefix}[Étape ${event.step}] Reprise après critique qualité (reprise ${event.retryNumber})`,
         );
         break;
 
       case 'stop':
         lines.push(
-          `[Fin] Arrêt : ${event.reason} | Appels LLM : ${event.totalLlmCalls} | Tokens cumulés : ${event.totalTokens}`,
+          `${prefix}[Fin] Arrêt : ${event.reason} | Appels LLM : ${event.totalLlmCalls} | Tokens cumulés : ${event.totalTokens}`,
         );
         break;
 
       case 'judge_call':
         lines.push(
-          `[Juge] Appel LLM (${event.model}) : ${event.tokens} tokens, verdict = ${event.verdict} (${event.durationMs}ms)`,
+          `${prefix}[Juge] Appel LLM (${event.model}) : ${event.tokens} tokens, verdict = ${event.verdict} (${event.durationMs}ms)`,
         );
         break;
 
       case 'judge_error':
-        lines.push(`[Juge] Échec ouvert (erreur ignorée) : ${event.reason}`);
+        lines.push(`${prefix}[Juge] Échec ouvert (erreur ignorée) : ${event.reason}`);
         break;
     }
   }

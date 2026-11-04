@@ -39,6 +39,7 @@ export interface RunAgentParams {
   readonly evaluate?: Evaluator;
   readonly maxEvaluationRetries?: number;
   readonly catalogue?: readonly Product[];
+  readonly role?: string;
 }
 
 export interface AgentRunResult {
@@ -55,6 +56,7 @@ export interface AgentRunResult {
   readonly messages: readonly ChatMessage[];
   readonly evaluationRetries: number;
   readonly lastViolations?: readonly string[];
+  readonly durationMs: number;
 }
 
 export const FALLBACK_MAX_STEPS_MESSAGE =
@@ -75,12 +77,14 @@ export async function callModel(
   messages: readonly ChatMessage[],
   tools: readonly ToolDefinition[],
   maxTokens?: number,
+  role?: string,
 ): Promise<ChatResponse> {
   return llm.chat({
     messages,
     tools,
     toolChoice: 'auto',
     maxTokens,
+    role,
   });
 }
 
@@ -89,15 +93,28 @@ export async function executeSingleToolCall(
   toolCall: ToolCall,
   step: number,
   approval?: ApprovalPort,
+  role: string = 'agent',
 ): Promise<{
   result: Record<string, unknown>;
   event: ToolCallTraceEvent;
   approvalEvent?: ApprovalTraceEvent;
+  nested?: {
+    traceEvents: TraceEvent[];
+    llmCalls: number;
+    usage: TokenUsage;
+  };
 }> {
   const startTime = Date.now();
   let callArguments: unknown = toolCall.function.arguments;
   let result: Record<string, unknown>;
   let approvalEvent: ApprovalTraceEvent | undefined;
+  let nested:
+    | {
+        traceEvents: TraceEvent[];
+        llmCalls: number;
+        usage: TokenUsage;
+      }
+    | undefined;
 
   try {
     const parsedArgs = toolCall.function.arguments
@@ -112,18 +129,30 @@ export async function executeSingleToolCall(
         conseil: 'utiliser uniquement les outils déclarés',
       };
     } else {
-      const guard = await evaluateToolGuard(tool, parsedArgs, step, approval);
+      const guard = await evaluateToolGuard(tool, parsedArgs, step, approval, role);
       approvalEvent = guard.approvalEvent;
 
       if (!guard.canExecute) {
         result = guard.directResult ?? { erreur: 'action non autorisée' };
       } else {
-        try {
-          result = await tool.execute(parsedArgs);
-        } catch {
-          result = {
-            erreur: "erreur interne lors de l'exécution de l'outil",
-          };
+        if (typeof tool.executeDetailed === 'function') {
+          try {
+            const detailed = await tool.executeDetailed(parsedArgs);
+            result = detailed.result;
+            nested = detailed.nested;
+          } catch {
+            result = {
+              erreur: "erreur interne lors de l'exécution de l'outil",
+            };
+          }
+        } else {
+          try {
+            result = await tool.execute(parsedArgs);
+          } catch {
+            result = {
+              erreur: "erreur interne lors de l'exécution de l'outil",
+            };
+          }
         }
       }
     }
@@ -141,16 +170,20 @@ export async function executeSingleToolCall(
     event: {
       type: 'tool_call',
       step,
+      agent: role,
       name: toolCall.function.name,
       arguments: callArguments,
       result,
       durationMs,
     },
     approvalEvent,
+    nested,
   };
 }
 
 export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> {
+  const runStartTime = Date.now();
+  const role = params.role ?? 'agent';
   const boundedMaxSteps = Math.min(Math.max(params.maxSteps ?? 8, 1), 10);
   const maxEvaluationRetries = Math.min(
     Math.max(params.maxEvaluationRetries ?? 2, 0),
@@ -183,6 +216,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       messages,
       toolDefinitions,
       params.maxTokens,
+      role,
     );
 
     llmCalls++;
@@ -194,6 +228,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
     traceEvents.push({
       type: 'llm_call',
       step,
+      agent: role,
       promptTokens: response.usage.promptTokens,
       completionTokens: response.usage.completionTokens,
       totalTokens: stepTokens,
@@ -209,16 +244,35 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       });
 
       for (const toolCall of toolCalls) {
-        const { result, event, approvalEvent } = await executeSingleToolCall(
+        const { result, event, approvalEvent, nested } = await executeSingleToolCall(
           params.tools,
           toolCall,
           step,
           params.approval,
+          role,
         );
         if (approvalEvent) {
           traceEvents.push(approvalEvent);
         }
         traceEvents.push(event);
+
+        if (nested) {
+          if (nested.traceEvents && nested.traceEvents.length > 0) {
+            const taggedNestedEvents = nested.traceEvents.map((e) => ({
+              ...e,
+              nested: true,
+            }));
+            traceEvents.push(...taggedNestedEvents);
+          }
+          if (nested.llmCalls) {
+            llmCalls += nested.llmCalls;
+          }
+          if (nested.usage) {
+            totalPromptTokens += nested.usage.promptTokens;
+            totalCompletionTokens += nested.usage.completionTokens;
+            totalTokens += computeTotalTokens(nested.usage);
+          }
+        }
 
         messages.push({
           role: 'tool',
@@ -248,6 +302,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       traceEvents.push({
         type: 'stop',
         step,
+        agent: role,
         reason: stopReason,
         totalLlmCalls: llmCalls,
         totalTokens,
@@ -267,6 +322,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
         messages: finalMessages,
         evaluationRetries,
         lastViolations,
+        durationMs: Date.now() - runStartTime,
       };
     }
 
@@ -297,6 +353,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       traceEvents.push({
         type: 'evaluation',
         step,
+        agent: role,
         ok: verdict.ok,
         violations: verdict.violations.map((v) => v.rule),
         retryNumber: evaluationRetries,
@@ -310,6 +367,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
           traceEvents.push({
             type: 'retry',
             step,
+            agent: role,
             retryNumber: evaluationRetries,
           });
 
@@ -342,6 +400,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
         traceEvents.push({
           type: 'stop',
           step,
+          agent: role,
           reason: stopReason,
           totalLlmCalls: llmCalls,
           totalTokens,
@@ -361,6 +420,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
           messages: finalMessages,
           evaluationRetries,
           lastViolations,
+          durationMs: Date.now() - runStartTime,
         };
       }
     }
@@ -378,6 +438,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
     traceEvents.push({
       type: 'stop',
       step,
+      agent: role,
       reason: stopReason,
       totalLlmCalls: llmCalls,
       totalTokens,
@@ -397,6 +458,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       messages: finalMessages,
       evaluationRetries,
       lastViolations,
+      durationMs: Date.now() - runStartTime,
     };
   }
 
@@ -411,6 +473,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
   traceEvents.push({
     type: 'stop',
     step: boundedMaxSteps,
+    agent: role,
     reason: 'max_steps',
     totalLlmCalls: llmCalls,
     totalTokens,
@@ -430,5 +493,6 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
     messages: finalMessages,
     evaluationRetries,
     lastViolations,
+    durationMs: Date.now() - runStartTime,
   };
 }

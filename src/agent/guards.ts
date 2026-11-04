@@ -37,6 +37,7 @@ export async function evaluateToolGuard(
   parsedArgs: unknown,
   step: number,
   approvalPort?: ApprovalPort,
+  agent: string = 'agent',
 ): Promise<GuardEvaluationResult> {
   if (!tool.requiresApproval) {
     return { canExecute: true };
@@ -60,6 +61,7 @@ export async function evaluateToolGuard(
       const approvalEvent: ApprovalTraceEvent = {
         type: 'approval',
         step,
+        agent,
         tool: tool.name,
         decision: false,
         reason: 'validation indisponible (aucun port fourni)',
@@ -78,6 +80,7 @@ export async function evaluateToolGuard(
     const approvalEvent: ApprovalTraceEvent = {
       type: 'approval',
       step,
+      agent,
       tool: tool.name,
       decision: decision.approved,
       reason: decision.reason,
@@ -105,6 +108,7 @@ export async function evaluateToolGuard(
       approvalEvent: {
         type: 'approval',
         step,
+        agent,
         tool: tool.name,
         decision: false,
         reason: 'validation indisponible',
