@@ -4,49 +4,10 @@ import { stdin as input, stdout as output } from 'node:process';
 import { ConsoleApproval } from '../adapters/approval/console-approval.js';
 import { RodiumClient } from '../adapters/llm/rodium-client.js';
 import { JsonFileStore } from '../adapters/store/json-file-store.js';
-import { createCallBudget, withCallBudget } from '../agent/budget.js';
-import {
-  composeEvaluators,
-  createJudgeEvaluator,
-  evaluateReply,
-  collectHistoryGrounding,
-  type Evaluator,
-} from '../agent/evaluation/index.js';
-import { SYSTEM_INSTRUCTIONS } from '../agent/instructions.js';
-import { runAgent } from '../agent/loop.js';
+import { createRunner, resolveRunnerMode } from '../agent/runners.js';
 import { formatTrace } from '../agent/trace.js';
 import { Shop } from '../domain/shop.js';
-import type { ChatMessage, LlmClient } from '../ports/llm-client.js';
-import { createDefaultRegistry } from '../tools/registry.js';
-
-const MAX_TOTAL_LLM_CALLS = process.env.MAX_TOTAL_LLM_CALLS
-  ? Math.max(1, Number.parseInt(process.env.MAX_TOTAL_LLM_CALLS, 10) || 20)
-  : 20;
-
-function setupTurnClients(underlyingLlm: RodiumClient): {
-  agentLlm: LlmClient;
-  evaluate: Evaluator | undefined;
-} {
-  const budget = createCallBudget(MAX_TOTAL_LLM_CALLS);
-  const agentLlm = withCallBudget(underlyingLlm, budget);
-
-  let evaluate: Evaluator | undefined;
-  if (process.env.EVALUATION === 'off') {
-    evaluate = undefined;
-  } else if (process.env.JUDGE === 'on') {
-    const judgeModel = process.env.JUDGE_MODEL || process.env.RODIUM_MODEL;
-    const judgeLlm = new RodiumClient({
-      model: judgeModel,
-    });
-    const cappedJudgeLlm = withCallBudget(judgeLlm, budget);
-    const judge = createJudgeEvaluator({ llm: cappedJudgeLlm });
-    evaluate = composeEvaluators(evaluateReply, judge);
-  } else {
-    evaluate = evaluateReply;
-  }
-
-  return { agentLlm, evaluate };
-}
+import type { ChatMessage } from '../ports/llm-client.js';
 
 async function main(): Promise<void> {
   let llm: RodiumClient;
@@ -63,15 +24,30 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const args = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+  const mode = resolveRunnerMode(rawArgs);
+
+  const queryArgs: string[] = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    const a = rawArgs[i];
+    if (!a) continue;
+    if (a === '--mode') {
+      i++;
+      continue;
+    }
+    if (a.startsWith('--mode=')) {
+      continue;
+    }
+    queryArgs.push(a);
+  }
+
   const dataFilePath = process.env.SHOP_DATA_FILE ?? 'data/shop.json';
   let store = new JsonFileStore(dataFilePath);
   let shop = new Shop(store);
-  let tools = createDefaultRegistry(shop);
 
   // One-off question mode:
-  if (args.length > 0) {
-    const userMessage = args.join(' ').trim();
+  if (queryArgs.length > 0) {
+    const userMessage = queryArgs.join(' ').trim();
     console.log(`\nClient : ${userMessage}\n`);
 
     const isInteractive = Boolean(input.isTTY);
@@ -83,17 +59,15 @@ async function main(): Promise<void> {
       approval = new ConsoleApproval((q) => rlOneOff!.question(q));
     }
 
-    const { agentLlm, evaluate } = setupTurnClients(llm);
+    const runner = createRunner({
+      mode,
+      llm,
+      shop: () => shop,
+      approval,
+    });
 
     try {
-      const result = await runAgent({
-        llm: agentLlm,
-        tools,
-        instructions: SYSTEM_INSTRUCTIONS,
-        userMessage,
-        approval,
-        evaluate,
-      });
+      const result = await runner({ userMessage });
 
       console.log('--- Trace d\'exécution ---');
       console.log(formatTrace(result.trace));
@@ -114,8 +88,15 @@ async function main(): Promise<void> {
   const history: ChatMessage[] = [];
   const sessionToolNames = new Set<string>();
 
+  const runner = createRunner({
+    mode,
+    llm,
+    shop: () => shop,
+    approval,
+  });
+
   console.log('='.repeat(65));
-  console.log('  Boutique d\'Afi - Agent Vendeur (Marché Dantokpa, Bénin)');
+  console.log(`  Boutique d'Afi - Mode : ${mode.toUpperCase()}`);
   console.log('  Stock persistant : ' + dataFilePath);
   console.log('  Commandes spéciales : /reset (réinitialiser) | /quit (quitter)');
   console.log('='.repeat(65) + '\n');
@@ -137,23 +118,14 @@ async function main(): Promise<void> {
         sessionToolNames.clear();
         store = new JsonFileStore(dataFilePath);
         shop = new Shop(store);
-        tools = createDefaultRegistry(shop);
         console.log('\n[Système] Conversation rechargée depuis le magasin persistant.\n');
         continue;
       }
 
-      const { agentLlm, evaluate } = setupTurnClients(llm);
-
       try {
-        const result = await runAgent({
-          llm: agentLlm,
-          tools,
-          instructions: SYSTEM_INSTRUCTIONS,
-          history,
+        const result = await runner({
           userMessage: trimmed,
-          approval,
-          evaluate,
-          historyGrounding: collectHistoryGrounding(history),
+          history,
           priorToolNames: sessionToolNames,
         });
 

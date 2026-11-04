@@ -1,17 +1,13 @@
 import 'dotenv/config';
 import { RodiumClient } from '../src/adapters/llm/rodium-client.js';
-import { createCallBudget, withCallBudget } from '../src/agent/budget.js';
 import {
-  composeEvaluators,
-  createJudgeEvaluator,
-  evaluateReply,
-  type Evaluator,
-} from '../src/agent/evaluation/index.js';
-import { SYSTEM_INSTRUCTIONS } from '../src/agent/instructions.js';
-import { type AgentRunResult, runAgent } from '../src/agent/loop.js';
+  createRunner,
+  resolveRunnerMode,
+  type RunnerMode,
+} from '../src/agent/runners.js';
+import { type AgentRunResult } from '../src/agent/loop.js';
 import { Shop } from '../src/domain/shop.js';
 import type { ChatRequest, ChatResponse, LlmClient } from '../src/ports/llm-client.js';
-import { createDefaultRegistry } from '../src/tools/registry.js';
 import {
   type Scenario,
   SCENARIOS,
@@ -53,6 +49,7 @@ interface CliArgs {
   readonly runs: number;
   readonly maxLlmCalls: number;
   readonly dryRun: boolean;
+  readonly mode: RunnerMode;
 }
 
 export function parseArgs(argv: readonly string[]): CliArgs {
@@ -68,6 +65,8 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     process.env.npm_config_dry_run === '1' ||
     process.env.DRY_RUN === '1' ||
     false;
+
+  const mode = resolveRunnerMode(argv);
 
   if (process.env.npm_config_scenarios) {
     selectedScenarioIds = process.env.npm_config_scenarios
@@ -121,7 +120,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     scenarios = SCENARIOS;
   }
 
-  return { scenarios, runs, maxLlmCalls, dryRun };
+  return { scenarios, runs, maxLlmCalls, dryRun, mode };
 }
 
 interface ScenarioRunStats {
@@ -188,12 +187,13 @@ export async function main(): Promise<void> {
   console.log('  PLAN D\'EXÉCUTION DU TEST LIVE PLAFONNÉ');
   console.log('='.repeat(70));
   console.log(`- Modèle cible         : ${model}`);
+  console.log(`- Mode                 : ${args.mode.toUpperCase()}`);
   console.log(`- Scénarios (${args.scenarios.length})     : ${args.scenarios.map((s) => s.id).join(', ')}`);
   console.log(`- Essais par scénario  : ${args.runs}`);
   console.log(`- Total des exécutions : ${totalRuns}`);
   console.log(`- Plafond d'appels LLM : ${args.maxLlmCalls} max`);
   console.log(`- Appels LLM estimés   : ~${totalRuns * estimatedCallsPerRun} (plafonné à ~${estimatedTotalCalls})`);
-  console.log(`- Mode                 : ${args.dryRun ? 'DRY-RUN (aucun appel réseau)' : 'LIVE (appels réels)'}`);
+  console.log(`- Type d'exécution     : ${args.dryRun ? 'DRY-RUN (aucun appel réseau)' : 'LIVE (appels réels)'}`);
   console.log('='.repeat(70) + '\n');
 
   // En --dry-run, s'arrête là sans aucun appel réseau
@@ -229,33 +229,6 @@ export async function main(): Promise<void> {
 
   let stoppedEarly = false;
   let earlyStopReason = '';
-  const MAX_TOTAL_LLM_CALLS = process.env.MAX_TOTAL_LLM_CALLS
-    ? Math.max(1, Number.parseInt(process.env.MAX_TOTAL_LLM_CALLS, 10) || 20)
-    : 20;
-
-  function setupTurnClients(): { agentLlm: LlmClient; evaluate: Evaluator | undefined } {
-    const turnBudget = createCallBudget(MAX_TOTAL_LLM_CALLS);
-    const agentLlm = withCallBudget(cappedLlm, turnBudget);
-
-    let evaluate: Evaluator | undefined;
-    if (process.env.EVALUATION === 'off') {
-      evaluate = undefined;
-    } else if (process.env.JUDGE === 'on') {
-      const judgeModel = process.env.JUDGE_MODEL || model;
-      const judgeLlm = new RodiumClient({
-        apiKey,
-        model: judgeModel,
-        baseUrl,
-      });
-      const cappedJudgeLlm = withCallBudget(judgeLlm, turnBudget);
-      const judge = createJudgeEvaluator({ llm: cappedJudgeLlm });
-      evaluate = composeEvaluators(evaluateReply, judge);
-    } else {
-      evaluate = evaluateReply;
-    }
-
-    return { agentLlm, evaluate };
-  }
 
   for (const scenario of args.scenarios) {
     if (stoppedEarly) break;
@@ -263,17 +236,22 @@ export async function main(): Promise<void> {
 
     for (let runIndex = 1; runIndex <= args.runs; runIndex++) {
       const shop = new Shop();
-      const tools = createDefaultRegistry(shop);
 
       let result: AgentRunResult | undefined;
       try {
-        const { agentLlm, evaluate } = setupTurnClients();
-        result = await runAgent({
-          llm: agentLlm,
-          tools,
-          instructions: SYSTEM_INSTRUCTIONS,
+        const runner = createRunner({
+          mode: args.mode,
+          llm: cappedLlm,
+          shop: () => shop,
+          judgeClientFactory: () =>
+            new RodiumClient({
+              apiKey,
+              model: process.env.JUDGE_MODEL || model,
+              baseUrl,
+            }),
+        });
+        result = await runner({
           userMessage: scenario.userMessage,
-          evaluate,
         });
       } catch (err) {
         if (err instanceof MaxLlmCallsReachedError) {
