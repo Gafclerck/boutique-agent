@@ -683,3 +683,57 @@ Le protocole standard exécute 3 runs par couple scénario/mode. L'analyse des r
 > Le rapport généré (`docs/comparaison-agent-seul-vs-equipe.md`) laisse volontairement vide la section finale :
 > `## Conclusion (à rédiger par l'étudiant, deux phrases)`
 > Il appartient à l'étudiant d'analyser le tableau de synthèse et les journaux d'erreurs pour rédiger personnellement sa synthèse critique, en gardant à l'esprit la loi des probabilités composées : **95 % de fiabilité par étape sur une chaîne de 10 étapes équivaut à seulement 60 % de fiabilité de bout en bout** ($0.95^{10} \approx 0.5987$).
+
+
+---
+
+## 14. Cycle de vie asynchrone des commandes
+
+Au palier 3, les commandes ne sont plus validées de façon synchrone dans la console via une invite humaine bloquante (`ApprovalPort`), mais de manière **asynchrone** par la commerçante (Afi) depuis son compte WhatsApp.
+
+### 14.1 Les 4 statuts de commande
+
+Une commande est un **instantané immuable** (`chatId`, `client_nom`, `zone`, articles avec prix unitaires, frais de livraison, total). Seuls le statut, l'horodatage de décision (`decidedAt`), le décideur (`decidedBy`) et la raison (`raison`) peuvent évoluer.
+
+```mermaid
+stateDiagram-v2
+    [*] --> en_attente_afi : submitOrderForApproval
+    en_attente_afi --> confirmee : approveOrder (stock suffisant)
+    en_attente_afi --> refusee : rejectOrder (décision Afi)
+    en_attente_afi --> annulee : cancelOrder ou rupture de stock
+    confirmee --> [*]
+    refusee --> [*]
+    annulee --> [*]
+```
+
+- **`en_attente_afi`** : La commande a été préparée et soumise par l'agent suite à l'accord explicite du client. Aucun stock n'est décrémenté à ce stade.
+- **`confirmee`** : Afi a répondu `OUI <numéro>`. Le stock a été revalidé et décrémenté atomiquement dans la même transaction.
+- **`refusee`** : Afi a répondu `NON <numéro>`. La commande n'est pas honorée, aucun stock n'est débité.
+- **`annulee`** : La commande a été annulée soit par le client/système, soit automatiquement si le client soumet une nouvelle commande, soit lors d'une rupture de stock survenue avant l'approbation.
+
+### 14.2 Règle d'unicité : une seule commande en attente par client
+
+- Chaque client (identifié par son `chatId`) peut avoir **au plus une** commande au statut `en_attente_afi`.
+- Lorsqu'un client soumet une nouvelle commande alors qu'une précédente est encore en attente, l'ancienne commande est **automatiquement annulée** (`statut: 'annulee'`, raison: *"remplacée par une nouvelle commande"*) au sein de la même transaction atomique du magasin (`ShopStore`).
+- Les commandes des autres clients ne sont pas affectées.
+
+### 14.3 Décrémentation du stock à l'approbation et gestion du risque
+
+- **Validation sans réservation** : À la soumission (`submitOrderForApproval`), le catalogue valide la faisabilité immédiate (`previewOrder`), mais le stock **n'est pas décrémenté**.
+- **Décrémentation atomique** : Le stock est décrémenté **uniquement au moment de l'approbation** par Afi (`approveOrder`), et revalidé dans la même transaction.
+- **Risque d'éviction et rupture tardive** : Si plusieurs clients demandent les mêmes articles ou si le stock est épuisé entre la soumission et l'approbation d'Afi, l'approbation échoue (`annulee_stock`). La commande passe immédiatement à `annulee` avec la raison `stock insuffisant pour <produit>`, sans aucune écriture partielle ou négative de stock. Le client et Afi en sont informés.
+
+### 14.4 Garde stricte de `creer_commande` en mode asynchrone
+
+Avant d'autoriser l'exécution de `creer_commande` en mode asynchrone, un garde en code vérifie 4 préconditions obligatoires (échec fermé) :
+1. **Devis préalable existant** : un appel réussi à `calculer_total` a été enregistré dans le contexte conversationnel (`lastQuote`).
+2. **Tours distincts** : le devis doit avoir été généré lors d'un tour antérieur (`lastQuote.turnId < currentTurnId`), interdisant au LLM de calculer le devis et créer la commande dans le même tour.
+3. **Accord explicite du client** : le dernier message du client doit être validé par `isExplicitConfirmation()` (liste blanche stricte de mots d'accord, aucun chiffre, aucune marque d'interrogation, maximum 6 mots).
+4. **Cohérence stricte des paramètres** : la zone canonique et le multiensemble d'articles `(référence, quantité)` doivent correspondre exactement au dernier devis calculé.
+
+Si l'une des conditions manque, l'action est refusée et l'agent reçoit une observation prescriptive lui rappelant de présenter d'abord le devis et d'attendre la confirmation du client dans son message suivant.
+
+### 14.5 Limites actuelles
+
+- **Périmètre du palier 3.1** : Le coeur métier (transitions, garde, analyse des commandes Afi, messages types) fonctionne en mémoire et sur fichier JSON local (`JsonFileStore`).
+- **Absence de passerelle réseau** : L'intégration Green API, le webhook Cloudflare Worker, le dédoublonnage de messages et la gestion d'expiration temporelle feront l'objet des paliers suivants.
