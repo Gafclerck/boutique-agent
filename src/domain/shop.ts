@@ -17,6 +17,14 @@ import {
   type ShopStore,
 } from '../ports/shop-store.js';
 import { InMemoryStore } from '../adapters/store/in-memory-store.js';
+import {
+  type OrderDecisionResult,
+  type OrderStatus,
+  extractOrderNumber,
+  transitionToConfirmed,
+  transitionToRefused,
+  transitionToCancelled,
+} from './order-lifecycle.js';
 
 export class InvalidKeywordError extends Error {
   constructor(message = 'mot-clé invalide') {
@@ -42,6 +50,14 @@ export interface OrderInputItem {
 }
 
 export interface OrderInput {
+  readonly clientNom?: string;
+  readonly client_nom?: string;
+  readonly zone: string;
+  readonly articles: readonly OrderInputItem[];
+}
+
+export interface SubmitOrderInput {
+  readonly chatId: string;
   readonly clientNom?: string;
   readonly client_nom?: string;
   readonly zone: string;
@@ -88,6 +104,17 @@ export type OrderPreviewResult =
 export type OrderCreationResult =
   | { readonly success: true; readonly order: RecordedOrder }
   | OrderFailureReason;
+
+export type SubmitOrderResult =
+  | {
+      readonly success: true;
+      readonly numero: number;
+      readonly cancelledNumbers: readonly number[];
+      readonly order: RecordedOrder;
+    }
+  | OrderFailureReason;
+
+export { type OrderDecisionResult, type OrderStatus };
 
 export class Shop {
   private readonly products: Map<string, Product>;
@@ -300,7 +327,7 @@ export class Shop {
   }
 
   /**
-   * Place an order: validates and atomically decrements stock and registers order in store.transact.
+   * Place an order (console mode): validates and atomically decrements stock and registers order in store.transact.
    */
   public async placeOrder(params: OrderInput): Promise<OrderCreationResult> {
     return this.store.transact((state) => {
@@ -321,6 +348,7 @@ export class Shop {
       state.prochain_numero = nextNum + 1;
 
       const order: RecordedOrder = {
+        numero: nextNum,
         numero_commande: numeroCommande,
         client_nom: preview.client_nom,
         zone: preview.zone,
@@ -336,6 +364,247 @@ export class Shop {
 
       state.commandes.push(order);
       return { success: true, order };
+    });
+  }
+
+  /**
+   * Submit an order for approval (async mode): validates without decrementing stock.
+   * If there is an existing pending order for the same chatId, it is cancelled in the same transaction.
+   */
+  public async submitOrderForApproval(
+    params: SubmitOrderInput,
+  ): Promise<SubmitOrderResult> {
+    return this.store.transact((state) => {
+      const validation = this.validateOrderAgainstState(params, state);
+      if (!validation.success) {
+        return validation;
+      }
+
+      const preview = validation.preview;
+
+      // Cancel any existing pending order for this chatId
+      const cancelledNumbers: number[] = [];
+      for (let i = 0; i < state.commandes.length; i++) {
+        const cmd = state.commandes[i];
+        if (!cmd) continue;
+        if (cmd.chatId === params.chatId && cmd.statut === 'en_attente_afi') {
+          const cmdNum = extractOrderNumber(cmd);
+          cancelledNumbers.push(cmdNum);
+          const transition = transitionToCancelled(cmd, {
+            raison: 'remplacée par une nouvelle commande',
+            decidedBy: 'system',
+          });
+          if (transition.success) {
+            state.commandes[i] = transition.order;
+          }
+        }
+      }
+
+      const nextNum = state.prochain_numero ?? 1;
+      const numeroCommande = `CMD-${nextNum}`;
+      state.prochain_numero = nextNum + 1;
+
+      const order: RecordedOrder = {
+        numero: nextNum,
+        numero_commande: numeroCommande,
+        chatId: params.chatId,
+        client_nom: preview.client_nom,
+        zone: preview.zone,
+        articles: preview.articles,
+        lignes: preview.articles,
+        frais_livraison_fcfa: preview.frais_livraison_fcfa,
+        frais: preview.frais_livraison_fcfa,
+        total_fcfa: preview.total_fcfa,
+        total: preview.total_fcfa,
+        statut: 'en_attente_afi',
+        date: new Date().toISOString(),
+      };
+
+      state.commandes.push(order);
+
+      return {
+        success: true,
+        numero: nextNum,
+        cancelledNumbers,
+        order,
+      };
+    });
+  }
+
+  /**
+   * Approve an order: revalidates stock and decrements atomically.
+   * If insufficient stock at approval, cancels order without decrement.
+   */
+  public async approveOrder(
+    numero: number | string,
+  ): Promise<OrderDecisionResult> {
+    return this.store.transact((state) => {
+      const targetNum =
+        typeof numero === 'number'
+          ? numero
+          : parseInt(String(numero).replace(/\D/g, ''), 10);
+
+      const idx = state.commandes.findIndex((cmd) => {
+        if (cmd.numero === targetNum) return true;
+        if (
+          cmd.numero_commande === String(numero) ||
+          cmd.numero_commande === `CMD-${targetNum}`
+        ) {
+          return true;
+        }
+        return extractOrderNumber(cmd) === targetNum;
+      });
+
+      if (idx === -1) {
+        return { status: 'introuvable' };
+      }
+
+      const order = state.commandes[idx];
+      if (!order) {
+        return { status: 'introuvable' };
+      }
+      if (order.statut !== 'en_attente_afi') {
+        return { status: 'deja_traitee', current: order };
+      }
+
+      // Group demanded quantities per ref
+      const neededPerRef = new Map<string, { demanded: number; nom: string }>();
+      for (const item of order.articles) {
+        const prev = neededPerRef.get(item.ref) ?? {
+          demanded: 0,
+          nom: item.nom,
+        };
+        neededPerRef.set(item.ref, {
+          demanded: prev.demanded + item.quantite,
+          nom: item.nom,
+        });
+      }
+
+      for (const [ref, { demanded, nom }] of neededPerRef) {
+        const available = state.stock[ref] ?? 0;
+        if (available < demanded) {
+          const raison = `stock insuffisant pour ${nom}`;
+          const cancelled = transitionToCancelled(order, {
+            raison,
+            decidedBy: 'system',
+          });
+          if (cancelled.success) {
+            state.commandes[idx] = cancelled.order;
+          }
+          return { status: 'annulee_stock', raison };
+        }
+      }
+
+      // Decrement stock
+      for (const [ref, { demanded }] of neededPerRef) {
+        state.stock[ref] = (state.stock[ref] ?? 0) - demanded;
+      }
+
+      const transition = transitionToConfirmed(order, { decidedBy: 'afi' });
+      if (!transition.success) {
+        return { status: 'deja_traitee', current: transition.current };
+      }
+
+      state.commandes[idx] = transition.order;
+      return { status: 'ok', order: transition.order };
+    });
+  }
+
+  /**
+   * Reject an order with optional reason.
+   */
+  public async rejectOrder(
+    numero: number | string,
+    raison?: string,
+  ): Promise<OrderDecisionResult> {
+    return this.store.transact((state) => {
+      const targetNum =
+        typeof numero === 'number'
+          ? numero
+          : parseInt(String(numero).replace(/\D/g, ''), 10);
+
+      const idx = state.commandes.findIndex((cmd) => {
+        if (cmd.numero === targetNum) return true;
+        if (
+          cmd.numero_commande === String(numero) ||
+          cmd.numero_commande === `CMD-${targetNum}`
+        ) {
+          return true;
+        }
+        return extractOrderNumber(cmd) === targetNum;
+      });
+
+      if (idx === -1) {
+        return { status: 'introuvable' };
+      }
+
+      const order = state.commandes[idx];
+      if (!order) {
+        return { status: 'introuvable' };
+      }
+      if (order.statut !== 'en_attente_afi') {
+        return { status: 'deja_traitee', current: order };
+      }
+
+      const transition = transitionToRefused(order, {
+        raison,
+        decidedBy: 'afi',
+      });
+      if (!transition.success) {
+        return { status: 'deja_traitee', current: transition.current };
+      }
+
+      state.commandes[idx] = transition.order;
+      return { status: 'ok', order: transition.order };
+    });
+  }
+
+  /**
+   * Cancel an order with required reason.
+   */
+  public async cancelOrder(
+    numero: number | string,
+    raison: string,
+  ): Promise<OrderDecisionResult> {
+    return this.store.transact((state) => {
+      const targetNum =
+        typeof numero === 'number'
+          ? numero
+          : parseInt(String(numero).replace(/\D/g, ''), 10);
+
+      const idx = state.commandes.findIndex((cmd) => {
+        if (cmd.numero === targetNum) return true;
+        if (
+          cmd.numero_commande === String(numero) ||
+          cmd.numero_commande === `CMD-${targetNum}`
+        ) {
+          return true;
+        }
+        return extractOrderNumber(cmd) === targetNum;
+      });
+
+      if (idx === -1) {
+        return { status: 'introuvable' };
+      }
+
+      const order = state.commandes[idx];
+      if (!order) {
+        return { status: 'introuvable' };
+      }
+      if (order.statut !== 'en_attente_afi') {
+        return { status: 'deja_traitee', current: order };
+      }
+
+      const transition = transitionToCancelled(order, {
+        raison,
+        decidedBy: 'system',
+      });
+      if (!transition.success) {
+        return { status: 'deja_traitee', current: transition.current };
+      }
+
+      state.commandes[idx] = transition.order;
+      return { status: 'ok', order: transition.order };
     });
   }
 
