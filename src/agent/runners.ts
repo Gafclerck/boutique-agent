@@ -33,7 +33,7 @@ export interface CreateRunnerDeps {
   readonly approval?: ApprovalPort;
   readonly fetchFn?: typeof fetch;
   readonly tools?: ToolRegistry;
-  readonly evaluate?: Evaluator;
+  readonly evaluate?: Evaluator | null;
   readonly judgeLlm?: LlmClient;
   readonly judgeClientFactory?: () => LlmClient;
   readonly maxTotalLlmCalls?: number;
@@ -84,10 +84,10 @@ export function createRunner(deps: CreateRunnerDeps): TurnRunner {
     const cappedLlm = withCallBudget(deps.llm, turnBudget);
 
     let evaluate: Evaluator | undefined;
-    if (deps.evaluate !== undefined) {
-      evaluate = deps.evaluate;
-    } else if (process.env.EVALUATION === 'off') {
+    if (deps.evaluate === null || process.env.EVALUATION === 'off') {
       evaluate = undefined;
+    } else if (deps.evaluate !== undefined) {
+      evaluate = deps.evaluate;
     } else if (process.env.JUDGE === 'on') {
       const judgeModel =
         process.env.JUDGE_MODEL || process.env.RODIUM_MODEL;
