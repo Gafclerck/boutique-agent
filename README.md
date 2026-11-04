@@ -612,3 +612,74 @@ LIVE=1 npm run live -- --mode=team --dry-run
 1. **Accord du client relayé par le LLM du Gérant** : le Vendeur n'a pas accès à la conversation client directe ; la détection du consentement explicite dépend donc de la fidélité du Gérant qui l'atteste dans le libellé de sa `demande`. La garde d'approbation humaine (`ApprovalPort`) sur `creer_commande` demeure le rempart de sécurité indispensable.
 2. **Fidélité des résumés** : le Gérant ne reçoit que la chaîne textuelle résumée (`{"resume": ...}`). Si un spécialiste omettait une information factuelle dans son résumé, le Gérant ne pourrait pas la reconstituer. L'évaluation qualité finale s'appuyant sur la trace technique complète (contenant les observations directes des outils imbriqués), toute divergence chiffrée reste sanctionnée.
 3. **Surcoût en appels LLM (overhead d'orchestration)** : l'architecture multi-agents multiplie les échanges d'orchestration. Par exemple, sur le scénario complet de Koffi, le mode équipe consomme **11 appels LLM** contre **5 appels LLM** pour le mode agent seul (~2.2x plus d'appels).
+
+---
+
+## 13. Comparer agent seul et équipe (`scripts/compare-modes.ts`)
+
+Un script de banc d'essai (`npm run compare`) permet d'évaluer et de comparer rigoureusement les deux architectures (**Agent seul** vs **Équipe multi-agents**) dans des conditions strictement équitables.
+
+### 13.1 Protocole expérimental et principe du facteur unique
+
+Pour garantir la validité scientifique de la comparaison, **un seul facteur change** : l'architecture d'orchestration (mono-agent vs équipe hiérarchique avec spécialiste). Toutes les autres variables sont rigoureusement verrouillées :
+- **Même modèle d'IA** : le modèle cible (`RODIUM_MODEL`) est identique pour tous les rôles (agent seul, gérant, vendeur, logisticien, rédacteur).
+- **Même harness et règles d'évaluation** : les deux modes sont instanciés via le même assembleur `createRunner` (`src/agent/runners.ts`) avec les règles d'évaluation en code (`evaluateReply`) actives.
+- **Juge LLM désactivé** : `JUDGE` est forcé à `off` par défaut (sauf si `--with-judge` est spécifié), éliminant tout bruit ou variabilité externe.
+- **Port d'approbation hermétique** : le port d'approbation refuse systématiquement tout enregistrement (`ApprovalDecision: false`), garantissant qu'aucune commande résiduelle n'est créée pendant le banc d'essai.
+- **États isolés et frais** : chaque exécution repart d'un état boutique initial vierge (`InMemoryStore` frais) et d'un historique conversationnel vide.
+- **Double plafond budgétaire** : un budget unitaire par tour (`MAX_TOTAL_LLM_CALLS`, défaut 20) ET un plafond global strict (`--max-llm-calls`, défaut 150) qui coupe immédiatement tout appel dès qu'il est atteint.
+
+### 13.2 Procédure d'exécution pas à pas
+
+#### Étape 1 : Simulation préalable gratuite (`--dry-run`)
+Avant toute dépense de tokens, la simulation affiche le plan complet d'exécution (nombre d'essais, scénarios, modes), le plafond d'appels et un plafond indicatif de dépense en RODI :
+```bash
+# Nécessite LIVE=1 et un modèle configuré, sans émettre d'appel réseau
+LIVE=1 npm run compare -- --dry-run
+```
+*(Le calcul indicatif repose sur la constante de 2 600 tokens par appel typique, soit 90 % en entrée et 10 % en sortie, issue des mesures du palier 1).*
+
+#### Étape 2 : Vérification du solde du portefeuille
+Vérifier que le solde de votre compte Rodium AI est approvisionné avant de lancer les runs réels :
+```bash
+# Consultation directe ou via l'API Rodium (GET /wallet)
+curl -H "Authorization: Bearer $RODIUM_API_KEY" https://api.rodium.ai/wallet
+```
+
+#### Étape 3 : Exécution du comparatif
+Lancer le script de comparaison plafonné :
+```bash
+# Exécution standard (3 essais par scénario sur S1, S2, S3, K pour les modes single et team)
+LIVE=1 npm run compare
+
+# Options de ciblage ou de limitation
+LIVE=1 npm run compare -- --scenarios S1,S2,S3,K --runs 3 --max-llm-calls 150
+```
+
+#### Étape 4 : Tolérance aux pannes et reprise automatique (`--resume`)
+Après chaque essai individuel, le script effectue une **sauvegarde progressive** :
+- Le fichier JSON brut est horodaté et mis à jour : `docs/mesures/compare-<horodatage>.json`.
+- Le rapport Markdown est régénéré dynamiquement : `docs/comparaison-agent-seul-vs-equipe.md`.
+
+En cas d'interruption réseau, d'épuisement de solde (`HTTP 402 / 429`) ou de dépassement de plafond :
+1. L'état acquis est intégralement conservé sur disque.
+2. Le script affiche la commande exacte de reprise :
+```bash
+# Reprise sans recalculer les exécutions déjà enregistrées
+LIVE=1 npm run compare -- --resume docs/mesures/compare-<horodatage>.json
+```
+
+### 13.3 Interprétation scientifique des petits échantillons
+
+Le protocole standard exécute 3 runs par couple scénario/mode. L'analyse des résultats doit observer une rigueur méthodologique :
+- **Tendance indicative vs certitude statistique** : 3 essais permettent de déceler des blocages fonctionnels systématiques, mais pas d'établir une probabilité fine face à la variance stochastique des LLM.
+- **Règle des trois (Rule of Three)** : si un échec ne s'est produit 0 fois sur 3 essais ($n = 3$), la borne supérieure de l'intervalle de confiance à 95 % est de $3 / n = 3 / 3 = 100\%$. Un résultat parfait de 3/3 n'exclut donc mathématiquement pas un taux d'anomalie pouvant atteindre jusqu'à 33 % sur une cohorte plus vaste.
+- **Latence réseau et saturation distante** : les temps de réponse dépendent de la charge instantanée des passerelles de modélisation et du réseau public au moment exact de la mesure.
+
+### 13.4 Rédaction manuelle de la conclusion
+
+> [!IMPORTANT]
+> **La conclusion ne doit JAMAIS être automatisée par l'agent ou le script.**
+> Le rapport généré (`docs/comparaison-agent-seul-vs-equipe.md`) laisse volontairement vide la section finale :
+> `## Conclusion (à rédiger par l'étudiant, deux phrases)`
+> Il appartient à l'étudiant d'analyser le tableau de synthèse et les journaux d'erreurs pour rédiger personnellement sa synthèse critique, en gardant à l'esprit la loi des probabilités composées : **95 % de fiabilité par étape sur une chaîne de 10 étapes équivaut à seulement 60 % de fiabilité de bout en bout** ($0.95^{10} \approx 0.5987$).
