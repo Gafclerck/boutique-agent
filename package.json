@@ -8,6 +8,7 @@
     "ask": "tsx src/entrypoints/cli.ts",
     "live": "tsx scripts/live-check.ts",
     "judge:calibration": "tsx scripts/judge-calibration.ts",
+    "compare": "tsx scripts/compare-modes.ts",
     "data:reset": "tsx scripts/reset-data.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
