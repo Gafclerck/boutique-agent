@@ -7,6 +7,7 @@
     "start": "tsx src/entrypoints/cli.ts",
     "ask": "tsx src/entrypoints/cli.ts",
     "live": "tsx scripts/live-check.ts",
+    "judge:calibration": "tsx scripts/judge-calibration.ts",
     "data:reset": "tsx scripts/reset-data.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
