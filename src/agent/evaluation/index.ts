@@ -7,6 +7,8 @@ import type { EvaluationInput, Verdict, Violation } from './types.js';
 
 export * from './types.js';
 export * from './utils.js';
+export * from './judge-criteria.js';
+export * from './judge.js';
 export { evaluateAlternativeEnRupture } from './rules/alternative-en-rupture.js';
 export { evaluateAncrageDesNombres } from './rules/ancrage-des-nombres.js';
 export { evaluateRechercheDabord } from './rules/recherche-dabord.js';
