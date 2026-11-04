@@ -6,6 +6,7 @@ import {
   composeEvaluators,
   createJudgeEvaluator,
   CRITERION_ALTERNATIVE_EN_RUPTURE,
+  CRITERION_ATTRIBUTION_CORRECTE,
   CRITERION_AUCUN_CHIFFRE_INVENTE,
   CRITERION_AUCUNE_PROMESSE_NON_ETAYEE,
   evaluateReply,
@@ -363,6 +364,7 @@ describe('Juge LLM (FakeLlm)', () => {
       expect(systemMsg).toContain(CRITERION_AUCUN_CHIFFRE_INVENTE);
       expect(systemMsg).toContain(CRITERION_ALTERNATIVE_EN_RUPTURE);
       expect(systemMsg).toContain(CRITERION_AUCUNE_PROMESSE_NON_ETAYEE);
+      expect(systemMsg).toContain(CRITERION_ATTRIBUTION_CORRECTE);
       expect(systemMsg).toContain('<message_client>');
       expect(systemMsg).toContain('<resultats_outils>');
       expect(systemMsg).toContain('<reponse>');
@@ -450,26 +452,28 @@ describe('Juge LLM (FakeLlm)', () => {
   });
 
   describe('Cas de référence et script de calibration (TACHE D)', () => {
-    it('comporte exactement 8 cas de calibration (4 ok, 4 pas_encore)', () => {
-      expect(JUDGE_CASES).toHaveLength(8);
+    it('comporte exactement 10 cas de calibration (5 ok, 5 pas_encore)', () => {
+      expect(JUDGE_CASES).toHaveLength(10);
 
       const okCases = JUDGE_CASES.filter((c) => c.expected === 'ok');
       const pasEncoreCases = JUDGE_CASES.filter((c) => c.expected === 'pas_encore');
 
-      expect(okCases).toHaveLength(4);
-      expect(pasEncoreCases).toHaveLength(4);
+      expect(okCases).toHaveLength(5);
+      expect(pasEncoreCases).toHaveLength(5);
 
       // Verify the 4 "ok" cases descriptions
       expect(okCases.some((c) => c.id.includes('stock'))).toBe(true);
       expect(okCases.some((c) => c.id.includes('rupture') && c.id.includes('alternative'))).toBe(true);
       expect(okCases.some((c) => c.id.includes('salutation'))).toBe(true);
       expect(okCases.some((c) => c.id.includes('devis'))).toBe(true);
+      expect(okCases.some((c) => c.id.includes('attribution'))).toBe(true);
 
       // Verify the 4 "pas_encore" cases descriptions
       expect(pasEncoreCases.some((c) => c.id.includes('toutes_lettres'))).toBe(true);
       expect(pasEncoreCases.some((c) => c.id.includes('rupture_sans_alternative'))).toBe(true);
       expect(pasEncoreCases.some((c) => c.id.includes('promesse_delai'))).toBe(true);
       expect(pasEncoreCases.some((c) => c.id.includes('fausse_confirmation'))).toBe(true);
+      expect(pasEncoreCases.some((c) => c.id.includes('attribution'))).toBe(true);
     });
 
     it('parseCalibrationArgs gère les options --dry-run et --max-llm-calls', () => {

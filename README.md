@@ -447,13 +447,14 @@ EVALUATION=off LIVE=1 npm run live -- --dry-run
 
 En complément des règles déterministes en code, un évaluateur basé sur un modèle de langage (**Juge LLM**) permet d'examiner les dimensions sémantiques et qualitatives de la réponse qui échappent aux vérifications purement syntaxiques.
 
-### 11.1 Les 3 critères du juge et pourquoi la longueur est en code
+### 11.1 Les 4 critères du juge et pourquoi la longueur est en code
 
-Le juge évalue la réponse selon 3 critères stricts rédigés en français :
+Le juge évalue la réponse selon 4 critères stricts rédigés en français :
 
 1. **Aucun chiffre inventé** : tout montant, quantité, délai, taux ou stock cité (en chiffres OU en toutes lettres, par exemple *douze mille*) apparaît dans les résultats d'outils ou dans le message du client.
 2. **Alternative en cas de rupture** : si un produit est en rupture, la réponse propose au moins un autre produit du catalogue qui répond au même besoin (même usage ou même catégorie).
 3. **Aucune promesse non étayée** : la réponse ne promet ni délai, ni disponibilité, ni remise, ni enregistrement de commande qui ne soit confirmé par un résultat d'outil de ce tour.
+4. **Attribution correcte** : chaque prix, total, stock ou frais cité est attribué au bon produit, à la bonne zone ou à la bonne commande, comme dans les résultats d'outils (par exemple, le prix d'un produit n'est pas donné pour un autre).
 
 > [!IMPORTANT]
 > **Pourquoi la longueur n'est PAS jugée par le LLM ?**
@@ -496,13 +497,13 @@ JUDGE=on JUDGE_MODEL=anthropic/claude-haiku-4-5-20251001 npm start
 
 ### 11.6 Procédure de calibration (`scripts/judge-calibration.ts`)
 
-Pour vérifier la fidélité du jugement du modèle face aux 3 critères sans altérer l'agent, un jeu d'étalonnage de 8 cas de référence (`tests/judge-cases.ts`) est fourni :
-- **4 cas conformes ("ok")** : stock vérifié conforme, rupture avec alternative vérifiée, salutation courtoise, devis exact calculé par outil.
-- **4 cas non conformes ("pas_encore")** : montant en toutes lettres absent des outils, rupture sans alternative, promesse de délai non étayée ("demain matin"), affirmation infondée d'enregistrement de commande.
+Pour vérifier la fidélité du jugement du modèle face aux 4 critères sans altérer l'agent, un jeu d'étalonnage de 10 cas de référence (`tests/judge-cases.ts`) est fourni :
+- **5 cas conformes ("ok")** : stock vérifié conforme, rupture avec alternative vérifiée, salutation courtoise, devis exact calculé par outil, prix correctement attribués.
+- **5 cas non conformes ("pas_encore")** : montant en toutes lettres absent des outils, rupture sans alternative, promesse de délai non étayée ("demain matin"), affirmation infondée d'enregistrement de commande, prix d'une chemise donné pour une robe.
 
 #### Exécution sécurisée :
 ```bash
-# 1. Mode simulation gratuit (affiche le plan des 8 cas sans appel réseau)
+# 1. Mode simulation gratuit (affiche le plan des 10 cas sans appel réseau)
 npm run judge:calibration -- --dry-run
 
 # 2. Exécution réelle sous contrôle strict (nécessite LIVE=1, clé et modèle Rodium)
@@ -511,7 +512,7 @@ LIVE=1 npm run judge:calibration
 # 3. Ajustement du plafond d'appels autorisé (défaut : 12)
 LIVE=1 npm run judge:calibration -- --max-llm-calls=15
 ```
-Le script affiche l'accord verdict/attendu par cas ainsi que le taux d'accord global (`X / 8 (XX.X %)`).
+Le script affiche l'accord verdict/attendu par cas ainsi que le taux d'accord global (`X / 10 (XX.X %)`).
 
 
 ---

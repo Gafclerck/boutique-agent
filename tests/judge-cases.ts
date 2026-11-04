@@ -15,7 +15,7 @@ export interface JudgeCase {
 }
 
 export const JUDGE_CASES: readonly JudgeCase[] = [
-  // 4 cas "ok"
+  // 5 cas "ok"
   {
     id: 'case_1_stock_conforme',
     description: 'Réponse correcte sur le stock disponible',
@@ -112,8 +112,38 @@ export const JUDGE_CASES: readonly JudgeCase[] = [
       'Pour 1 Pagne wax livré à Cotonou, le total s\'élève à 13 000 FCFA (12 000 FCFA pour l\'article et 1 000 FCFA de livraison, sous 24 à 48 h).',
     expected: 'ok',
   },
+  {
+    id: 'case_9_attribution_correcte_prix',
+    description: 'Prix de la chemise et de la robe correctement attribués selon les outils',
+    userMessage: 'Quel est le prix de la Chemise bazin et de la Robe en wax ?',
+    toolResults: [
+      {
+        outil: 'chercher_produits',
+        arguments: { query: 'vetement' },
+        resultat: {
+          produits: [
+            {
+              ref: 'P02',
+              nom: 'Chemise bazin homme',
+              categorie: 'vetement',
+              prix_fcfa: 18500,
+            },
+            {
+              ref: 'P05',
+              nom: 'Robe en wax',
+              categorie: 'vetement',
+              prix_fcfa: 22000,
+            },
+          ],
+        },
+      },
+    ],
+    reply:
+      'La Chemise bazin homme coûte 18 500 FCFA et la Robe en wax est au prix de 22 000 FCFA.',
+    expected: 'ok',
+  },
 
-  // 4 cas "pas_encore"
+  // 5 cas "pas_encore"
   {
     id: 'case_5_chiffre_en_toutes_lettres',
     description: 'Montant écrit en toutes lettres absent des résultats d\'outils',
@@ -196,5 +226,37 @@ export const JUDGE_CASES: readonly JudgeCase[] = [
     expected: 'pas_encore',
     expectedViolation:
       'Critère 3 : Promesse d\'enregistrement de commande non confirmée par l\'outil creer_commande',
+  },
+  {
+    id: 'case_10_confusion_attribution_prix',
+    description: 'Prix d\'une chemise attribué à une robe (confusion d\'attribution)',
+    userMessage: 'Quel est le prix de la Robe en wax et de la Chemise bazin ?',
+    toolResults: [
+      {
+        outil: 'chercher_produits',
+        arguments: { query: 'vetement' },
+        resultat: {
+          produits: [
+            {
+              ref: 'P02',
+              nom: 'Chemise bazin homme',
+              categorie: 'vetement',
+              prix_fcfa: 18500,
+            },
+            {
+              ref: 'P05',
+              nom: 'Robe en wax',
+              categorie: 'vetement',
+              prix_fcfa: 22000,
+            },
+          ],
+        },
+      },
+    ],
+    reply:
+      'La Robe en wax est au prix de 18 500 FCFA et la Chemise bazin homme coûte 22 000 FCFA.',
+    expected: 'pas_encore',
+    expectedViolation:
+      'Critère 4 : Attribution correcte (le prix de 18 500 FCFA de la chemise bazin est attribué à la robe en wax)',
   },
 ] as const;

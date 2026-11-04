@@ -7,10 +7,14 @@ export const CRITERION_ALTERNATIVE_EN_RUPTURE =
 export const CRITERION_AUCUNE_PROMESSE_NON_ETAYEE =
   "Aucune promesse non étayée : la réponse ne promet ni délai, ni disponibilité, ni remise, ni enregistrement de commande qui ne soit confirmé par un résultat d'outil de ce tour.";
 
+export const CRITERION_ATTRIBUTION_CORRECTE =
+  "Attribution correcte : chaque prix, total, stock ou frais cité est attribué au bon produit, à la bonne zone ou à la bonne commande, comme dans les résultats d'outils (par exemple, le prix d'un produit n'est pas donné pour un autre).";
+
 export const JUDGE_CRITERIA = [
   CRITERION_AUCUN_CHIFFRE_INVENTE,
   CRITERION_ALTERNATIVE_EN_RUPTURE,
   CRITERION_AUCUNE_PROMESSE_NON_ETAYEE,
+  CRITERION_ATTRIBUTION_CORRECTE,
 ] as const;
 
 export const JUDGE_CRITERIA_TEXT = JUDGE_CRITERIA.map(

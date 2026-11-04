@@ -85,7 +85,9 @@ export async function runCalibration(argv: readonly string[] = process.argv.slic
     console.log('  CALIBRATION DU JUGE LLM — MODE SIMULATION (--dry-run)');
     console.log('='.repeat(70));
     console.log(`Modèle cible      : ${model}`);
-    console.log(`Nombre de cas     : ${JUDGE_CASES.length} cas de calibration (4 "ok", 4 "pas_encore")`);
+    const okCount = JUDGE_CASES.filter((c) => c.expected === 'ok').length;
+    const pasEncoreCount = JUDGE_CASES.filter((c) => c.expected === 'pas_encore').length;
+    console.log(`Nombre de cas     : ${JUDGE_CASES.length} cas de calibration (${okCount} "ok", ${pasEncoreCount} "pas_encore")`);
     console.log(`Appels LLM prévus : ${JUDGE_CASES.length} appels`);
     console.log(`Plafond maxCalls  : ${args.maxLlmCalls} appels`);
     console.log('-'.repeat(70));
