@@ -9,10 +9,12 @@ import {
   REASON_MESSAGES,
   scenarioA,
   scenarioC,
+  scenarioK,
   scenarioS1,
   scenarioS2,
   scenarioS3,
 } from '../eval/scenarios.js';
+import { createRunner } from '../src/agent/runners.js';
 
 function createMockRatesFetch(): typeof fetch {
   return (async () => {
@@ -23,6 +25,7 @@ function createMockRatesFetch(): typeof fetch {
         rates: {
           EUR: 0.001524,
           USD: 0.001702,
+          NGN: 2.5,
         },
         time_last_update_utc: 'Sun, 01 Nov 2026 00:00:00 +0000',
       }),
@@ -352,6 +355,157 @@ describe('Vérificateurs déterministes de scénarios', () => {
       const check = scenarioC.check(result);
       expect(check.ok).toBe(false);
       expect(check.reasons).toContain(REASON_MESSAGES.C_NO_STOCK);
+    });
+  });
+
+  describe('Scénario K : Koffi à Porto-Novo (karité et conversion NGN)', () => {
+    it('valide une exécution conforme en mode agent seul scripté', async () => {
+      const fakeLlmSingle = new FakeLlm([
+        makeToolCallResponse('s1', 'chercher_produits', { mot_cle: 'beurre de karite' }),
+        makeToolCallResponse('s2', 'verifier_stock', { ref: 'P06' }),
+        makeToolCallResponse('s3', 'calculer_total', {
+          articles: [{ ref: 'P06', quantite: 3 }],
+          zone: 'Porto-Novo',
+        }),
+        makeToolCallResponse('s4', 'convertir_devise', { montant_fcfa: 13500, devise: 'NGN' }),
+        makeTextResponse(
+          'Bonjour Koffi ! Vos 3 pots de beurre de karité livrés à Porto-Novo coûtent 13 500 FCFA, ce qui fait 33 750 NGN.',
+        ),
+      ]);
+
+      const runner = createRunner({
+        mode: 'single',
+        llm: fakeLlmSingle,
+        shop: new Shop(),
+        fetchFn: createMockRatesFetch(),
+      });
+
+      const result = await runner({ userMessage: scenarioK.userMessage });
+      const check = scenarioK.check(result);
+      expect(check.ok).toBe(true);
+      expect(check.reasons).toEqual([]);
+    });
+
+    it('valide une exécution conforme en mode équipe scripté (trace imbriquée)', async () => {
+      const fakeLlmTeam = new FakeLlm({
+        gerant: [
+          makeToolCallResponse('g1', 'demander_au_vendeur', {
+            demande: 'Rechercher P06, stock et devis pour 3 pots à Porto-Novo',
+          }),
+          makeToolCallResponse('g2', 'demander_au_logisticien', {
+            demande: 'Convertir 13 500 FCFA en NGN',
+          }),
+          makeToolCallResponse('g3', 'demander_au_redacteur', {
+            faits: '3 pots P06 à Porto-Novo : 13 500 FCFA, soit 33 750 NGN',
+          }),
+          makeTextResponse(
+            'Bonjour M. Koffi ! Vos 3 pots de Beurre de karité reviennent à 13 500 FCFA livrés à Porto-Novo, soit 33 750 NGN. Souhaitez-vous confirmer ?',
+          ),
+        ],
+        vendeur: [
+          makeToolCallResponse('v1', 'chercher_produits', { mot_cle: 'karite' }),
+          makeToolCallResponse('v2', 'verifier_stock', { ref: 'P06' }),
+          makeToolCallResponse('v3', 'calculer_total', {
+            articles: [{ ref: 'P06', quantite: 3 }],
+            zone: 'Porto-Novo',
+          }),
+          makeTextResponse('3 pots P06 : 10 500 FCFA + 3 000 FCFA livraison = 13 500 FCFA'),
+        ],
+        logisticien: [
+          makeToolCallResponse('l1', 'convertir_devise', { montant_fcfa: 13500, devise: 'NGN' }),
+          makeTextResponse('13 500 FCFA = 33 750 NGN'),
+        ],
+        redacteur: [
+          makeTextResponse(
+            'Bonjour M. Koffi ! Vos 3 pots de Beurre de karité reviennent à 13 500 FCFA livrés à Porto-Novo, soit 33 750 NGN.',
+          ),
+        ],
+      });
+
+      const runner = createRunner({
+        mode: 'team',
+        llm: fakeLlmTeam,
+        shop: new Shop(),
+        fetchFn: createMockRatesFetch(),
+      });
+
+      const result = await runner({ userMessage: scenarioK.userMessage });
+      const check = scenarioK.check(result);
+      expect(check.ok).toBe(true);
+      expect(check.reasons).toEqual([]);
+    });
+
+    it('détecte l\'échec : conversion d\'un autre montant (ex: sous-total 10500 au lieu du total 13500)', async () => {
+      const fakeLlmSingle = new FakeLlm([
+        makeToolCallResponse('s1', 'calculer_total', {
+          articles: [{ ref: 'P06', quantite: 3 }],
+          zone: 'Porto-Novo',
+        }),
+        makeToolCallResponse('s2', 'convertir_devise', { montant_fcfa: 10500, devise: 'NGN' }),
+        makeTextResponse('Le total est de 13 500 FCFA, soit 26 250 NGN pour les articles seuls.'),
+      ]);
+
+      const runner = createRunner({
+        mode: 'single',
+        llm: fakeLlmSingle,
+        shop: new Shop(),
+        fetchFn: createMockRatesFetch(),
+        evaluate: null,
+      });
+
+      const result = await runner({ userMessage: scenarioK.userMessage });
+      const check = scenarioK.check(result);
+      expect(check.ok).toBe(false);
+      expect(check.reasons).toContain(REASON_MESSAGES.K_CONVERT_WRONG_AMOUNT(13500, 10500));
+    });
+
+    it('détecte l\'échec : absence de conversion en NGN', async () => {
+      const fakeLlmSingle = new FakeLlm([
+        makeToolCallResponse('s1', 'calculer_total', {
+          articles: [{ ref: 'P06', quantite: 3 }],
+          zone: 'Porto-Novo',
+        }),
+        makeTextResponse('Vos 3 pots de beurre de karité coûtent 13 500 FCFA livrés à Porto-Novo.'),
+      ]);
+
+      const runner = createRunner({
+        mode: 'single',
+        llm: fakeLlmSingle,
+        shop: new Shop(),
+        fetchFn: createMockRatesFetch(),
+        evaluate: null,
+      });
+
+      const result = await runner({ userMessage: scenarioK.userMessage });
+      const check = scenarioK.check(result);
+      expect(check.ok).toBe(false);
+      expect(check.reasons).toContain(REASON_MESSAGES.K_NO_CONVERT);
+    });
+
+    it('détecte l\'échec : montant converti absent de la réponse finale', async () => {
+      const fakeLlmSingle = new FakeLlm([
+        makeToolCallResponse('s1', 'calculer_total', {
+          articles: [{ ref: 'P06', quantite: 3 }],
+          zone: 'Porto-Novo',
+        }),
+        makeToolCallResponse('s2', 'convertir_devise', { montant_fcfa: 13500, devise: 'NGN' }),
+        makeTextResponse(
+          'Vos 3 pots de beurre de karité livrés à Porto-Novo reviennent à un total de 13 500 FCFA.',
+        ),
+      ]);
+
+      const runner = createRunner({
+        mode: 'single',
+        llm: fakeLlmSingle,
+        shop: new Shop(),
+        fetchFn: createMockRatesFetch(),
+        evaluate: null,
+      });
+
+      const result = await runner({ userMessage: scenarioK.userMessage });
+      const check = scenarioK.check(result);
+      expect(check.ok).toBe(false);
+      expect(check.reasons).toContain(REASON_MESSAGES.K_AMOUNT_MISMATCH(33750));
     });
   });
 });

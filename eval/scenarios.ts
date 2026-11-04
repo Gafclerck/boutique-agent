@@ -34,6 +34,16 @@ export const REASON_MESSAGES = {
   A_NO_SEARCH: "chercher_produits n'a pas été appelé avant la réponse finale",
 
   C_NO_STOCK: "verifier_stock n'a pas été appelé sur la référence concernée (P05)",
+
+  K_NO_TOTAL: "calculer_total n'a pas été appelé avec P06, quantité 3 et la zone Porto-Novo",
+  K_NO_CONVERT: "convertir_devise n'a pas été appelé pour la devise NGN",
+  K_CONVERT_WRONG_AMOUNT: (expected: number, actual?: number) =>
+    `convertir_devise a été appelé avec un montant (${actual}) différent du total_fcfa (${expected}) calculé`,
+  K_CONVERT_FAILED: "l'outil convertir_devise a renvoyé une erreur",
+  K_AMOUNT_MISMATCH: (expected: number | string) =>
+    `le montant converti (${expected}) ne correspond pas à la réponse`,
+  K_NOT_ANSWERED: (actual: string) =>
+    `l'exécution s'est terminée avec le statut "${actual}" au lieu de "answered"`,
 } as const;
 
 function extractToolCalls(result: AgentRunResult): readonly ToolCallTraceEvent[] {
@@ -52,6 +62,43 @@ function parseArguments(raw: unknown): Record<string, unknown> {
     return raw as Record<string, unknown>;
   }
   return {};
+}
+
+function checkAmountInReply(reply: string, amount: number): boolean {
+  const dotStr = amount.toString();
+  const commaStr = dotStr.replace('.', ',');
+  const dot2Str = amount.toFixed(2);
+  const comma2Str = dot2Str.replace('.', ',');
+  if (
+    reply.includes(dotStr) ||
+    reply.includes(commaStr) ||
+    reply.includes(dot2Str) ||
+    reply.includes(comma2Str)
+  ) {
+    return true;
+  }
+  // Formats avec séparateurs de milliers usuels
+  const enFormatted = amount.toLocaleString('en-US'); // "33,750"
+  const spaceFormatted = enFormatted.replace(/,/g, ' '); // "33 750"
+  const nbspFormatted = enFormatted.replace(/,/g, '\u00a0');
+  const narrowNbspFormatted = enFormatted.replace(/,/g, '\u202f');
+  if (
+    reply.includes(enFormatted) ||
+    reply.includes(spaceFormatted) ||
+    reply.includes(nbspFormatted) ||
+    reply.includes(narrowNbspFormatted)
+  ) {
+    return true;
+  }
+  // Motif chiffres espacés (ex: "33 750")
+  const digitsOnly = Math.floor(amount).toString();
+  if (digitsOnly.length >= 4) {
+    const spacedPattern = digitsOnly.split('').join('\\s*');
+    if (new RegExp(spacedPattern).test(reply)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -92,15 +139,7 @@ export const scenarioS1: Scenario = {
       } else {
         const montant = res?.montant_converti;
         if (typeof montant === 'number') {
-          const dotStr = montant.toString();
-          const commaStr = dotStr.replace('.', ',');
-          const dot2Str = montant.toFixed(2);
-          const comma2Str = dot2Str.replace('.', ',');
-          const found =
-            result.reply.includes(dotStr) ||
-            result.reply.includes(commaStr) ||
-            result.reply.includes(dot2Str) ||
-            result.reply.includes(comma2Str);
+          const found = checkAmountInReply(result.reply, montant);
           if (!found) {
             reasons.push(REASON_MESSAGES.S1_AMOUNT_MISMATCH(montant));
           }
@@ -287,12 +326,115 @@ export const scenarioC: Scenario = {
   },
 };
 
+/**
+ * Scénario K (Koffi) :
+ * "Je suis Koffi à Porto-Novo. Combien me coûtent 3 pots de beurre de karité livrés, et ça fait combien en nairas ?"
+ *
+ * Critères :
+ * (1) calculer_total appelé avec P06, quantité 3 et zone Porto-Novo
+ * (2) convertir_devise appelé avec devise NGN et montant_fcfa égal au total_fcfa renvoyé par calculer_total dans le tour
+ * (3) réponse contient le montant converti renvoyé par l'outil (formats numériques tolérants)
+ * (4) stopReason vaut "answered"
+ * Fonctionne sur la trace aplatie (agent seul ou équipe).
+ */
+export const scenarioK: Scenario = {
+  id: 'K',
+  description: 'Devis pour 3 pots de beurre de karité livrés à Porto-Novo et conversion en nairas',
+  userMessage:
+    'Je suis Koffi à Porto-Novo. Combien me coûtent 3 pots de beurre de karité livrés, et ça fait combien en nairas ?',
+  check(result: AgentRunResult): ScenarioCheckResult {
+    const reasons: string[] = [];
+    const toolCalls = extractToolCalls(result);
+
+    // (4) stopReason vaut "answered"
+    if (result.stopReason !== 'answered') {
+      reasons.push(REASON_MESSAGES.K_NOT_ANSWERED(result.stopReason));
+    }
+
+    // (1) calculer_total appelé avec P06, quantité 3 et la zone Porto-Novo
+    let matchingTotalCall: ToolCallTraceEvent | undefined;
+    let expectedTotalFcfa: number | undefined;
+
+    for (const call of toolCalls) {
+      if (call.name !== 'calculer_total') continue;
+      const args = parseArguments(call.arguments);
+      const zone = (args.zone ?? '').toString().trim().toLowerCase();
+      const isPortoNovo = zone.includes('porto-novo') || zone.includes('portonovo');
+      const articles = Array.isArray(args.articles) ? args.articles : [];
+      const hasP06Quantite3 = articles.some((item) => {
+        if (!item || typeof item !== 'object') return false;
+        const ref = (item.ref ?? '').toString().trim().toUpperCase();
+        const q = Number(item.quantite ?? item.quantity);
+        return ref === 'P06' && q === 3;
+      });
+
+      if (isPortoNovo && hasP06Quantite3) {
+        matchingTotalCall = call;
+        const res = call.result ?? {};
+        if (typeof res.total_fcfa === 'number') {
+          expectedTotalFcfa = res.total_fcfa;
+        }
+        break;
+      }
+    }
+
+    if (!matchingTotalCall) {
+      reasons.push(REASON_MESSAGES.K_NO_TOTAL);
+    }
+
+    // (2) convertir_devise appelé avec devise NGN et un montant_fcfa égal au total_fcfa renvoyé par calculer_total dans le tour
+    const convertCalls = toolCalls.filter((call) => call.name === 'convertir_devise');
+    const ngnCalls = convertCalls.filter((call) => {
+      const args = parseArguments(call.arguments);
+      const dev = (args.devise ?? '').toString().trim().toUpperCase();
+      return dev === 'NGN';
+    });
+
+    if (ngnCalls.length === 0) {
+      reasons.push(REASON_MESSAGES.K_NO_CONVERT);
+    } else {
+      const matchingAmountCall = ngnCalls.find((call) => {
+        const args = parseArguments(call.arguments);
+        const montant = Number(args.montant_fcfa);
+        return expectedTotalFcfa !== undefined && montant === expectedTotalFcfa;
+      });
+
+      if (!matchingAmountCall) {
+        const actualAmount = Number(parseArguments(ngnCalls[0]?.arguments).montant_fcfa);
+        reasons.push(
+          REASON_MESSAGES.K_CONVERT_WRONG_AMOUNT(
+            expectedTotalFcfa ?? 13500,
+            Number.isNaN(actualAmount) ? undefined : actualAmount,
+          ),
+        );
+      } else {
+        const res = matchingAmountCall.result ?? {};
+        if (typeof res.erreur === 'string') {
+          reasons.push(REASON_MESSAGES.K_CONVERT_FAILED);
+        } else {
+          // (3) la réponse contient le montant converti renvoyé par l'outil (formats numériques tolérants)
+          const montant = res.montant_converti;
+          if (typeof montant === 'number') {
+            const found = checkAmountInReply(result.reply, montant);
+            if (!found) {
+              reasons.push(REASON_MESSAGES.K_AMOUNT_MISMATCH(montant));
+            }
+          }
+        }
+      }
+    }
+
+    return { ok: reasons.length === 0, reasons };
+  },
+};
+
 export const SCENARIOS: readonly Scenario[] = [
   scenarioS1,
   scenarioS2,
   scenarioS3,
   scenarioA,
   scenarioC,
+  scenarioK,
 ];
 
 export const SCENARIOS_BY_ID: ReadonlyMap<string, Scenario> = new Map(
