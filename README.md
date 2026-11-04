@@ -512,3 +512,102 @@ LIVE=1 npm run judge:calibration
 LIVE=1 npm run judge:calibration -- --max-llm-calls=15
 ```
 Le script affiche l'accord verdict/attendu par cas ainsi que le taux d'accord global (`X / 8 (XX.X %)`).
+
+
+---
+
+## 12. Mode équipe multi-agents (Palier 2b)
+
+Le mode équipe découpe l'agent monolithique en 4 spécialistes distincts avec contextes isolés, instructions spécifiques et rôles précis :
+- **Gérant** (`gerant`) : Orchestrateur central.
+- **Vendeur** (`vendeur`) : Spécialiste catalogue, stocks, devis et commandes.
+- **Logisticien** (`logisticien`) : Spécialiste expédition, frais de port et conversion de devises.
+- **Rédacteur** (`redacteur`) : Spécialiste de la mise en forme du message final pour WhatsApp.
+
+### 12.1 Architecture et flux d'information
+
+```mermaid
+flowchart TD
+  Client(["Client (WhatsApp)"]) <--> Gerant["Gérant (Orchestrateur)"]
+
+  subgraph LLM_View["Ce que voit le LLM du Gérant"]
+    Gerant -- "demande" --> OutilVendeur["demander_au_vendeur"]
+    Gerant -- "demande" --> OutilLogisticien["demander_au_logisticien"]
+    Gerant -- "faits" --> OutilRedacteur["demander_au_redacteur"]
+
+    OutilVendeur -- "{ resume: ... }" --> Gerant
+    OutilLogisticien -- "{ resume: ... }" --> Gerant
+    OutilRedacteur -- "{ resume: ... }" --> Gerant
+  end
+
+  subgraph Specialists["Spécialistes (Contextes Neufs & Outils Dédiés)"]
+    OutilVendeur --> Vendeur["Vendeur (role: vendeur)"]
+    OutilLogisticien --> Logisticien["Logisticien (role: logisticien)"]
+    OutilRedacteur --> Redacteur["Rédacteur (role: redacteur)"]
+
+    Vendeur --> T1["chercher_produits"]
+    Vendeur --> T2["verifier_stock"]
+    Vendeur --> T3["calculer_total"]
+    Vendeur --> T4["creer_commande (approbation)"]
+
+    Logisticien --> T5["frais_livraison"]
+    Logisticien --> T6["convertir_devise"]
+    Redacteur --> TNone["(aucun outil)"]
+  end
+
+  subgraph Code_View["Ce que voit le Code (Harness & Évaluateur)"]
+    Harness["Trace aplatie unifiée (nested: true, agent: rôle)"]
+    Evaluator["Évaluateur qualité (evaluateReply & Juge LLM)"]
+    BudgetMgr["Budget partagé par tour (MAX_TOTAL_LLM_CALLS)"]
+
+    T1 -.-> Harness
+    T2 -.-> Harness
+    T3 -.-> Harness
+    T4 -.-> Harness
+    T5 -.-> Harness
+    T6 -.-> Harness
+    Harness --> Evaluator
+  end
+```
+
+### 12.2 Rôles et outils des spécialistes
+
+| Rôle | Rôle technique | Instructions | Outils dédiés | Mission principale |
+|---|---|---|---|---|
+| **Gérant** | `gerant` | `GERANT_INSTRUCTIONS` | `demander_au_vendeur`, `demander_au_logisticien`, `demander_au_redacteur` | Réceptionne le message client, décompose la demande, sollicite les spécialistes de façon autonome et complète, et soumet les faits au rédacteur. |
+| **Vendeur** | `vendeur` | `VENDEUR_INSTRUCTIONS` | `chercher_produits`, `verifier_stock`, `calculer_total`, `creer_commande` | Recherche d'articles, contrôle systématique du stock, alternatives en cas de rupture, calcul de devis et enregistrement de commande confirmée. |
+| **Logisticien** | `logisticien` | `LOGISTICIEN_INSTRUCTIONS` | `frais_livraison`, `convertir_devise` | Chiffrage des frais de port et délais par zone, liste des zones desservies, conversion en devises étrangères avec taux en direct. |
+| **Rédacteur** | `redacteur` | `REDACTEUR_INSTRUCTIONS` | *(aucun outil)* | Formulation finale chaleureuse, polie (vouvoiement) et concise (< 80 mots) sur WhatsApp sans altérer ni inventer de faits chiffrés. |
+
+### 12.3 Budget d'appels partagé par tour
+
+Chaque tour de dialogue instancie un budget d'appels LLM unique et partagé (`MAX_TOTAL_LLM_CALLS`, défaut 20) :
+- Le client LLM du Gérant, ceux des trois spécialistes et celui du juge LLM consomment tous des jetons d'appels sur le **même compteur**.
+- Si un spécialiste ou le Gérant épuise le budget alloué, `BudgetExceededError` est levée immédiatement.
+- Le harness intercepte l'erreur proprement et clôture le tour avec `stopReason: "budget_exceeded"`, prévenant tout emballement d'appels ou boucle infinie entre agents.
+
+### 12.4 Sélection du mode (`MODE`)
+
+L'assembleur commun (`src/agent/runners.ts`) factorise la construction des modes. Le mode s'active via la variable d'environnement `MODE` ou le paramètre en ligne de commande `--mode` :
+
+```bash
+# 1. Mode équipe interactif (CLI)
+MODE=team npm start
+npm start -- --mode=team
+
+# 2. Mode agent seul (comportement historique par défaut)
+npm start
+npm start -- --mode=single
+
+# 3. Question ponctuelle en mode équipe
+npm start -- --mode=team "Avez-vous du pagne wax en stock ?"
+
+# 4. Simulation live en mode équipe (aucun appel réel au LLM)
+LIVE=1 npm run live -- --mode=team --dry-run
+```
+
+### 12.5 Limites connues
+
+1. **Accord du client relayé par le LLM du Gérant** : le Vendeur n'a pas accès à la conversation client directe ; la détection du consentement explicite dépend donc de la fidélité du Gérant qui l'atteste dans le libellé de sa `demande`. La garde d'approbation humaine (`ApprovalPort`) sur `creer_commande` demeure le rempart de sécurité indispensable.
+2. **Fidélité des résumés** : le Gérant ne reçoit que la chaîne textuelle résumée (`{"resume": ...}`). Si un spécialiste omettait une information factuelle dans son résumé, le Gérant ne pourrait pas la reconstituer. L'évaluation qualité finale s'appuyant sur la trace technique complète (contenant les observations directes des outils imbriqués), toute divergence chiffrée reste sanctionnée.
+3. **Surcoût en appels LLM (overhead d'orchestration)** : l'architecture multi-agents multiplie les échanges d'orchestration. Par exemple, sur le scénario complet de Koffi, le mode équipe consomme **11 appels LLM** contre **5 appels LLM** pour le mode agent seul (~2.2x plus d'appels).
