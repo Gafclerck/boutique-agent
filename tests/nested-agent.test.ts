@@ -5,12 +5,12 @@ import { SYSTEM_INSTRUCTIONS } from '../src/agent/instructions.js';
 import { runAgent } from '../src/agent/loop.js';
 import { formatTrace, type ToolCallTraceEvent } from '../src/agent/trace.js';
 import { INITIAL_PRODUCTS } from '../src/domain/catalogue.js';
-import type { ChatResponse, LlmRequest } from '../src/ports/llm-client.js';
+import type { ChatResponse } from '../src/ports/llm-client.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import type { Tool } from '../src/tools/types.js';
 
 describe('TACHE B : Rôle, traces imbriquées, durée et FakeLlm par rôle', () => {
-  it('LlmRequest gagne role et RunAgentParams transmet role (défaut "agent")', async () => {
+  it('ChatRequest gagne role et RunAgentParams transmet role (défaut "agent")', async () => {
     const fakeLlm = new FakeLlm([
       {
         message: { role: 'assistant', content: 'Bonjour !' },

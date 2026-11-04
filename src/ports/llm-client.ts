@@ -52,8 +52,6 @@ export interface ChatRequest {
   readonly role?: string;
 }
 
-export type LlmRequest = ChatRequest;
-
 export interface LlmClient {
   chat(request: ChatRequest): Promise<ChatResponse>;
 }
