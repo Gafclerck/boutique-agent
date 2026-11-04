@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { RodiumClient } from '../src/adapters/llm/rodium-client.js';
+import { createCallBudget, withCallBudget } from '../src/agent/budget.js';
 import {
   composeEvaluators,
   createJudgeEvaluator,
@@ -228,20 +229,32 @@ export async function main(): Promise<void> {
 
   let stoppedEarly = false;
   let earlyStopReason = '';
-  let evaluate: Evaluator | undefined;
-  if (process.env.EVALUATION === 'off') {
-    evaluate = undefined;
-  } else if (process.env.JUDGE === 'on') {
-    const judgeModel = process.env.JUDGE_MODEL || model;
-    const judgeLlm = new RodiumClient({
-      apiKey,
-      model: judgeModel,
-      baseUrl,
-    });
-    const judge = createJudgeEvaluator({ llm: judgeLlm });
-    evaluate = composeEvaluators(evaluateReply, judge);
-  } else {
-    evaluate = evaluateReply;
+  const MAX_TOTAL_LLM_CALLS = process.env.MAX_TOTAL_LLM_CALLS
+    ? Math.max(1, Number.parseInt(process.env.MAX_TOTAL_LLM_CALLS, 10) || 20)
+    : 20;
+
+  function setupTurnClients(): { agentLlm: LlmClient; evaluate: Evaluator | undefined } {
+    const turnBudget = createCallBudget(MAX_TOTAL_LLM_CALLS);
+    const agentLlm = withCallBudget(cappedLlm, turnBudget);
+
+    let evaluate: Evaluator | undefined;
+    if (process.env.EVALUATION === 'off') {
+      evaluate = undefined;
+    } else if (process.env.JUDGE === 'on') {
+      const judgeModel = process.env.JUDGE_MODEL || model;
+      const judgeLlm = new RodiumClient({
+        apiKey,
+        model: judgeModel,
+        baseUrl,
+      });
+      const cappedJudgeLlm = withCallBudget(judgeLlm, turnBudget);
+      const judge = createJudgeEvaluator({ llm: cappedJudgeLlm });
+      evaluate = composeEvaluators(evaluateReply, judge);
+    } else {
+      evaluate = evaluateReply;
+    }
+
+    return { agentLlm, evaluate };
   }
 
   for (const scenario of args.scenarios) {
@@ -254,8 +267,9 @@ export async function main(): Promise<void> {
 
       let result: AgentRunResult | undefined;
       try {
+        const { agentLlm, evaluate } = setupTurnClients();
         result = await runAgent({
-          llm: cappedLlm,
+          llm: agentLlm,
           tools,
           instructions: SYSTEM_INSTRUCTIONS,
           userMessage: scenario.userMessage,

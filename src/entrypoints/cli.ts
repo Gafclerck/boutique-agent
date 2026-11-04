@@ -4,6 +4,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { ConsoleApproval } from '../adapters/approval/console-approval.js';
 import { RodiumClient } from '../adapters/llm/rodium-client.js';
 import { JsonFileStore } from '../adapters/store/json-file-store.js';
+import { createCallBudget, withCallBudget } from '../agent/budget.js';
 import {
   composeEvaluators,
   createJudgeEvaluator,
@@ -14,8 +15,37 @@ import { SYSTEM_INSTRUCTIONS } from '../agent/instructions.js';
 import { runAgent } from '../agent/loop.js';
 import { formatTrace } from '../agent/trace.js';
 import { Shop } from '../domain/shop.js';
-import type { ChatMessage } from '../ports/llm-client.js';
+import type { ChatMessage, LlmClient } from '../ports/llm-client.js';
 import { createDefaultRegistry } from '../tools/registry.js';
+
+const MAX_TOTAL_LLM_CALLS = process.env.MAX_TOTAL_LLM_CALLS
+  ? Math.max(1, Number.parseInt(process.env.MAX_TOTAL_LLM_CALLS, 10) || 20)
+  : 20;
+
+function setupTurnClients(underlyingLlm: RodiumClient): {
+  agentLlm: LlmClient;
+  evaluate: Evaluator | undefined;
+} {
+  const budget = createCallBudget(MAX_TOTAL_LLM_CALLS);
+  const agentLlm = withCallBudget(underlyingLlm, budget);
+
+  let evaluate: Evaluator | undefined;
+  if (process.env.EVALUATION === 'off') {
+    evaluate = undefined;
+  } else if (process.env.JUDGE === 'on') {
+    const judgeModel = process.env.JUDGE_MODEL || process.env.RODIUM_MODEL;
+    const judgeLlm = new RodiumClient({
+      model: judgeModel,
+    });
+    const cappedJudgeLlm = withCallBudget(judgeLlm, budget);
+    const judge = createJudgeEvaluator({ llm: cappedJudgeLlm });
+    evaluate = composeEvaluators(evaluateReply, judge);
+  } else {
+    evaluate = evaluateReply;
+  }
+
+  return { agentLlm, evaluate };
+}
 
 async function main(): Promise<void> {
   let llm: RodiumClient;
@@ -32,19 +62,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  let evaluate: Evaluator | undefined;
-  if (process.env.EVALUATION === 'off') {
-    evaluate = undefined;
-  } else if (process.env.JUDGE === 'on') {
-    const judgeModel = process.env.JUDGE_MODEL || process.env.RODIUM_MODEL;
-    const judgeLlm = new RodiumClient({
-      model: judgeModel,
-    });
-    const judge = createJudgeEvaluator({ llm: judgeLlm });
-    evaluate = composeEvaluators(evaluateReply, judge);
-  } else {
-    evaluate = evaluateReply;
-  }
   const args = process.argv.slice(2);
   const dataFilePath = process.env.SHOP_DATA_FILE ?? 'data/shop.json';
   let store = new JsonFileStore(dataFilePath);
@@ -65,9 +82,11 @@ async function main(): Promise<void> {
       approval = new ConsoleApproval((q) => rlOneOff!.question(q));
     }
 
+    const { agentLlm, evaluate } = setupTurnClients(llm);
+
     try {
       const result = await runAgent({
-        llm,
+        llm: agentLlm,
         tools,
         instructions: SYSTEM_INSTRUCTIONS,
         userMessage,
@@ -120,9 +139,11 @@ async function main(): Promise<void> {
         continue;
       }
 
+      const { agentLlm, evaluate } = setupTurnClients(llm);
+
       try {
         const result = await runAgent({
-          llm,
+          llm: agentLlm,
           tools,
           instructions: SYSTEM_INSTRUCTIONS,
           history,

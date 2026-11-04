@@ -16,6 +16,7 @@ import {
   type Evaluator,
 } from './evaluation/index.js';
 import { evaluateToolGuard } from './guards.js';
+import { BudgetExceededError } from './budget.js';
 import type {
   ApprovalTraceEvent,
   ToolCallTraceEvent,
@@ -48,7 +49,8 @@ export interface AgentRunResult {
     | 'answered'
     | 'max_steps'
     | 'empty_reply'
-    | 'evaluation_failed';
+    | 'evaluation_failed'
+    | 'budget_exceeded';
   readonly steps: number;
   readonly llmCalls: number;
   readonly usage: TokenUsage;
@@ -210,7 +212,9 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
   let evaluationRetries = 0;
   let lastViolations: string[] | undefined;
 
-  for (let step = 1; step <= boundedMaxSteps; step++) {
+  let step = 1;
+  try {
+    for (; step <= boundedMaxSteps; step++) {
     const response = await callModel(
       params.llm,
       messages,
@@ -495,4 +499,42 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
     lastViolations,
     durationMs: Date.now() - runStartTime,
   };
+} catch (err) {
+  if (err instanceof BudgetExceededError) {
+    const finalReply = EVALUATION_FALLBACK_MESSAGE;
+    const finalMessages = messages.filter((m) => !retryMessages.has(m));
+    finalMessages.push({
+      role: 'assistant',
+      content: finalReply,
+    });
+
+    traceEvents.push({
+      type: 'stop',
+      step: Math.min(step, boundedMaxSteps),
+      agent: role,
+      reason: 'budget_exceeded',
+      totalLlmCalls: llmCalls,
+      totalTokens,
+    });
+
+    return {
+      reply: finalReply,
+      stopReason: 'budget_exceeded',
+      steps: Math.min(step, boundedMaxSteps),
+      llmCalls,
+      usage: {
+        promptTokens: totalPromptTokens,
+        completionTokens: totalCompletionTokens,
+        totalTokens,
+      },
+      trace: traceEvents,
+      messages: finalMessages,
+      evaluationRetries,
+      lastViolations,
+      durationMs: Date.now() - runStartTime,
+    };
+  }
+
+  throw err;
+}
 }

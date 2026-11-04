@@ -4,6 +4,7 @@ import type {
   TokenUsage,
 } from '../../ports/llm-client.js';
 import type { ToolCallTraceEvent, TraceEvent } from '../trace.js';
+import { BudgetExceededError } from '../budget.js';
 import {
   JUDGE_CRITERIA_TEXT,
 } from './judge-criteria.js';
@@ -146,7 +147,11 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): Evaluator 
       });
     } catch (err) {
       // Do not catch programming errors (TypeError, ReferenceError)
-      if (err instanceof TypeError || err instanceof ReferenceError) {
+      if (
+        err instanceof TypeError ||
+        err instanceof ReferenceError ||
+        err instanceof BudgetExceededError
+      ) {
         throw err;
       }
       const reason = err instanceof Error ? err.message : String(err);
