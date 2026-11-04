@@ -112,6 +112,7 @@ async function main(): Promise<void> {
   const rl = readline.createInterface({ input, output });
   const approval = new ConsoleApproval((question) => rl.question(question));
   const history: ChatMessage[] = [];
+  const sessionToolNames = new Set<string>();
 
   console.log('='.repeat(65));
   console.log('  Boutique d\'Afi - Agent Vendeur (Marché Dantokpa, Bénin)');
@@ -133,6 +134,7 @@ async function main(): Promise<void> {
 
       if (trimmed === '/reset') {
         history.length = 0;
+        sessionToolNames.clear();
         store = new JsonFileStore(dataFilePath);
         shop = new Shop(store);
         tools = createDefaultRegistry(shop);
@@ -152,12 +154,17 @@ async function main(): Promise<void> {
           approval,
           evaluate,
           historyGrounding: collectHistoryGrounding(history),
+          priorToolNames: sessionToolNames,
         });
 
         console.log('\n--- Trace d\'exécution ---');
         console.log(formatTrace(result.trace));
         console.log('-------------------------\n');
         console.log(`Agent > ${result.reply}\n`);
+
+        for (const name of result.toolNames) {
+          sessionToolNames.add(name);
+        }
 
         history.length = 0;
         history.push(...result.messages.slice(1));

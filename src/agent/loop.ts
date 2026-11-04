@@ -44,6 +44,7 @@ export interface RunAgentParams {
   readonly catalogue?: readonly Product[];
   readonly role?: string;
   readonly historyGrounding?: HistoryGrounding;
+  readonly priorToolNames?: ReadonlySet<string>;
 }
 
 export interface AgentRunResult {
@@ -62,6 +63,7 @@ export interface AgentRunResult {
   readonly evaluationRetries: number;
   readonly lastViolations?: readonly string[];
   readonly durationMs: number;
+  readonly toolNames: string[];
 }
 
 export const FALLBACK_MAX_STEPS_MESSAGE =
@@ -107,6 +109,7 @@ export async function executeSingleToolCall(
     traceEvents: TraceEvent[];
     llmCalls: number;
     usage: TokenUsage;
+    toolNames?: string[];
   };
 }> {
   const startTime = Date.now();
@@ -118,6 +121,7 @@ export async function executeSingleToolCall(
         traceEvents: TraceEvent[];
         llmCalls: number;
         usage: TokenUsage;
+        toolNames?: string[];
       }
     | undefined;
 
@@ -196,7 +200,10 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
   );
   const catalogue = params.catalogue ?? INITIAL_PRODUCTS;
   const toolDefinitions = params.tools.getDefinitions();
-  const priorCatalogueLookup = hasPriorCatalogueLookup(params.history);
+  const priorCatalogueLookup =
+    params.priorToolNames !== undefined
+      ? params.priorToolNames.has('chercher_produits')
+      : hasPriorCatalogueLookup(params.history);
 
   const messages: ChatMessage[] = [
     { role: 'system', content: params.instructions },
@@ -208,6 +215,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
   const retryMessages = new Set<ChatMessage>();
 
   const traceEvents: TraceEvent[] = [];
+  const toolNames: string[] = [];
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let totalTokens = 0;
@@ -264,6 +272,11 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
           traceEvents.push(approvalEvent);
         }
         traceEvents.push(event);
+
+        toolNames.push(toolCall.function.name);
+        if (nested?.toolNames) {
+          toolNames.push(...nested.toolNames);
+        }
 
         if (nested) {
           if (nested.traceEvents && nested.traceEvents.length > 0) {
@@ -332,6 +345,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
         evaluationRetries,
         lastViolations,
         durationMs: Date.now() - runStartTime,
+        toolNames,
       };
     }
 
@@ -431,6 +445,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
           evaluationRetries,
           lastViolations,
           durationMs: Date.now() - runStartTime,
+          toolNames,
         };
       }
     }
@@ -469,6 +484,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       evaluationRetries,
       lastViolations,
       durationMs: Date.now() - runStartTime,
+      toolNames,
     };
   }
 
@@ -504,6 +520,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
     evaluationRetries,
     lastViolations,
     durationMs: Date.now() - runStartTime,
+    toolNames,
   };
 } catch (err) {
   if (err instanceof BudgetExceededError) {
@@ -538,6 +555,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       evaluationRetries,
       lastViolations,
       durationMs: Date.now() - runStartTime,
+      toolNames,
     };
   }
 

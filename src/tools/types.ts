@@ -21,6 +21,7 @@ export interface Tool {
       traceEvents: TraceEvent[];
       llmCalls: number;
       usage: TokenUsage;
+      toolNames?: string[];
     };
   }>;
   toDefinition(): ToolDefinition;
