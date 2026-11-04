@@ -282,6 +282,18 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
 
       const verdict = await params.evaluate(evalInput);
 
+      if (verdict.llmCalls) {
+        llmCalls += verdict.llmCalls;
+      }
+      if (verdict.usage) {
+        totalPromptTokens += verdict.usage.promptTokens;
+        totalCompletionTokens += verdict.usage.completionTokens;
+        totalTokens += computeTotalTokens(verdict.usage);
+      }
+      if (verdict.traceEvents && verdict.traceEvents.length > 0) {
+        traceEvents.push(...verdict.traceEvents);
+      }
+
       traceEvents.push({
         type: 'evaluation',
         step,

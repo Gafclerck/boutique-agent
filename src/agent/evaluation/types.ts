@@ -1,4 +1,5 @@
 import type { Product } from '../../domain/catalogue.js';
+import type { TokenUsage } from '../../ports/llm-client.js';
 import type { TraceEvent } from '../trace.js';
 
 export interface EvaluationInput {
@@ -17,6 +18,9 @@ export interface Violation {
 export interface Verdict {
   readonly ok: boolean;
   readonly violations: readonly Violation[];
+  readonly llmCalls?: number;
+  readonly usage?: TokenUsage;
+  readonly traceEvents?: readonly TraceEvent[];
 }
 
 export type Evaluator = (input: EvaluationInput) => Verdict | Promise<Verdict>;
