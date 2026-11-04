@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  countWords,
   evaluateAlternativeEnRupture,
   evaluateAncrageDesNombres,
   evaluateRechercheDabord,
   evaluateReply,
+  evaluateReponseCourte,
   evaluateStockDabord,
+  MAX_REPLY_WORDS,
   type EvaluationInput,
 } from '../src/agent/evaluation/index.js';
 import type { ToolCallTraceEvent, TraceEvent } from '../src/agent/trace.js';
@@ -488,6 +491,61 @@ describe('Evaluation Module - Pure Quality Rules', () => {
     });
   });
 
+  describe('Rule 5: reponseCourte', () => {
+    it('80 mots accepté', () => {
+      const words80 = Array.from({ length: 80 }, (_, i) => `mot${i + 1}`).join(' ');
+      expect(countWords(words80)).toBe(80);
+
+      const input: EvaluationInput = {
+        userMessage: 'Bonjour',
+        reply: words80,
+        trace: [],
+        catalogue: INITIAL_PRODUCTS,
+      };
+
+      expect(evaluateReponseCourte(input)).toBeNull();
+    });
+
+    it('81 mots refusé', () => {
+      const words81 = Array.from({ length: 81 }, (_, i) => `mot${i + 1}`).join(' ');
+      expect(countWords(words81)).toBe(81);
+
+      const input: EvaluationInput = {
+        userMessage: 'Bonjour',
+        reply: words81,
+        trace: [],
+        catalogue: INITIAL_PRODUCTS,
+      };
+
+      const violation = evaluateReponseCourte(input);
+      expect(violation).not.toBeNull();
+      expect(violation?.rule).toBe('reponseCourte');
+      expect(violation?.critique).toBe(
+        "Contrôle qualité : ta réponse fait 81 mots, le maximum est 80. Reformule en gardant l'essentiel (produit, prix, total, prochaine étape), sans changer les chiffres issus des outils.",
+      );
+    });
+
+    it('gère correctement les retours à la ligne et espaces multiples', () => {
+      const text = 'mot1\nmot2\r\nmot3\t\t4\n\n\n5';
+      expect(countWords(text)).toBe(5);
+
+      const input: EvaluationInput = {
+        userMessage: 'Bonjour',
+        reply: text,
+        trace: [],
+        catalogue: INITIAL_PRODUCTS,
+      };
+
+      expect(evaluateReponseCourte(input)).toBeNull();
+    });
+
+    it('compte les nombres comme des mots', () => {
+      const text = 'Prix 12 000 FCFA avec 3 articles pour 5 personnes';
+      // 'Prix', '12', '000', 'FCFA', 'avec', '3', 'articles', 'pour', '5', 'personnes' = 10 mots
+      expect(countWords(text)).toBe(10);
+    });
+  });
+
   describe('evaluateReply - Global Verdict & Deterministic Order', () => {
     it('verdict conforme : ok = true et tableau de violations vide', () => {
       const trace: TraceEvent[] = [
@@ -531,6 +589,28 @@ describe('Evaluation Module - Pure Quality Rules', () => {
       expect(verdict.violations[0]?.rule).toBe('rechercheD_abord');
       expect(verdict.violations[1]?.rule).toBe('stockD_abord');
       expect(verdict.violations[2]?.rule).toBe('ancrageDesNombres');
+    });
+
+    it('détecte le cumul avec reponseCourte en 5e position', () => {
+      // 81 mots + aucune recherche sur sac + sac en raphia sans stock + prix inventé
+      const words81 =
+        'Notre Sac en raphia est vendu 15 000 FCFA. ' +
+        Array.from({ length: 73 }, (_, i) => `detail${i + 1}`).join(' ');
+
+      const verdict = evaluateReply({
+        userMessage: 'Avez-vous un sac ?',
+        reply: words81,
+        trace: [],
+        catalogue: INITIAL_PRODUCTS,
+        hasPriorCatalogueLookup: false,
+      });
+
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations).toHaveLength(4);
+      expect(verdict.violations[0]?.rule).toBe('rechercheD_abord');
+      expect(verdict.violations[1]?.rule).toBe('stockD_abord');
+      expect(verdict.violations[2]?.rule).toBe('ancrageDesNombres');
+      expect(verdict.violations[3]?.rule).toBe('reponseCourte');
     });
   });
 });
