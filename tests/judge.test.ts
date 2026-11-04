@@ -12,6 +12,7 @@ import {
   type EvaluationInput,
   JUDGE_CRITIQUE_PREFIX,
   JUDGE_GENERIC_CRITIQUE,
+  JUDGE_SYSTEM_PROMPT,
   MAX_TOOL_RESULTS_CHARS,
 } from '../src/agent/evaluation/index.js';
 import { SYSTEM_INSTRUCTIONS } from '../src/agent/instructions.js';
@@ -407,13 +408,43 @@ describe('Juge LLM (FakeLlm)', () => {
       const userMsg = judgeLlm.requests[0]?.messages.find((m) => m.role === 'user')?.content ?? '';
 
       // Must be capped and contain [tronqué]
-      expect(userMsg).toContain('... [tronqué]');
+      expect(userMsg).toContain('[résultats tronqués]');
 
       // Extract content between <resultats_outils> and </resultats_outils>
       const match = /<resultats_outils>([\s\S]*?)<\/resultats_outils>/.exec(userMsg);
       expect(match).not.toBeNull();
       const toolsContent = match![1]!.trim();
-      expect(toolsContent.length).toBeLessThanOrEqual(200 + '... [tronqué]'.length + 10);
+      expect(toolsContent.length).toBeLessThanOrEqual(200 + '... [résultats tronqués]'.length + 10);
+      expect(toolsContent.endsWith('[résultats tronqués]')).toBe(true);
+    });
+
+    it('mention absente sans troncature dans les résultats d\'outils', async () => {
+      const judgeLlm = new FakeLlm([makeJudgeResponse('{"verdict":"ok","critique":""}')]);
+      const judge = createJudgeEvaluator({
+        llm: judgeLlm,
+        maxToolResultsChars: 4000,
+      });
+
+      const smallResult = { data: 'Court résultat' };
+      const trace = [makeToolCallEvent('chercher_produits', smallResult)];
+
+      await judge({
+        userMessage: 'Cherche des pagnes',
+        reply: 'Voici les pagnes.',
+        trace,
+        catalogue: INITIAL_PRODUCTS,
+      });
+
+      expect(judgeLlm.requests).toHaveLength(1);
+      const userMsg = judgeLlm.requests[0]?.messages.find((m) => m.role === 'user')?.content ?? '';
+      expect(userMsg).not.toContain('[résultats tronqués]');
+    });
+
+    it('consigne sur les résultats tronqués présente dans le prompt du juge', () => {
+      expect(JUDGE_SYSTEM_PROMPT).toContain(
+        "Si le bloc contient la mention [résultats tronqués], ne conclus pas à un chiffre inventé sur la seule absence d'un nombre dans les résultats affichés.",
+      );
+      expect(MAX_TOOL_RESULTS_CHARS).toBe(4000);
     });
   });
 

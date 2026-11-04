@@ -9,7 +9,7 @@ import {
 } from './judge-criteria.js';
 import type { EvaluationInput, Evaluator, Verdict } from './types.js';
 
-export const MAX_TOOL_RESULTS_CHARS = 2000;
+export const MAX_TOOL_RESULTS_CHARS = 4000;
 export const JUDGE_CRITIQUE_PREFIX = 'Contrôle qualité (juge) : ';
 export const JUDGE_GENERIC_CRITIQUE =
   "le juge estime la réponse insuffisante sur les critères écrits ; reformule en t'appuyant uniquement sur les résultats d'outils";
@@ -30,7 +30,8 @@ Tu dois répondre uniquement avec un seul objet JSON au format exact suivant, sa
 RÈGLES DU VERDICT ET DE LA CRITIQUE :
 - "verdict" doit valoir exactement "ok" ou "pas_encore".
 - Si le verdict est "ok", la critique doit être une chaîne vide ("").
-- Si le verdict est "pas_encore", la critique doit être courte, factuelle, actionnable, et nommer expressément le critère violé.`;
+- Si le verdict est "pas_encore", la critique doit être courte, factuelle, actionnable, et nommer expressément le critère violé.
+- Si le bloc contient la mention [résultats tronqués], ne conclus pas à un chiffre inventé sur la seule absence d'un nombre dans les résultats affichés.`;
 
 export function neutralizeClosingTags(text: string): string {
   return text.replaceAll('</', '< /');
@@ -122,7 +123,7 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): Evaluator 
 
     let serializedTools = JSON.stringify(compactToolData);
     if (serializedTools.length > maxToolResultsChars) {
-      serializedTools = `${serializedTools.slice(0, maxToolResultsChars)}... [tronqué]`;
+      serializedTools = `${serializedTools.slice(0, maxToolResultsChars)}... [résultats tronqués]`;
     }
 
     const userMessageContent = buildJudgeUserMessage(
