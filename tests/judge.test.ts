@@ -21,6 +21,8 @@ import { INITIAL_PRODUCTS } from '../src/domain/catalogue.js';
 import { Shop } from '../src/domain/shop.js';
 import { type ChatResponse, LlmError } from '../src/ports/llm-client.js';
 import { createDefaultRegistry } from '../src/tools/registry.js';
+import { JUDGE_CASES } from './judge-cases.js';
+import { parseCalibrationArgs } from '../scripts/judge-calibration.js';
 
 function makeJudgeResponse(
   content: string,
@@ -414,4 +416,42 @@ describe('Juge LLM (FakeLlm)', () => {
       expect(toolsContent.length).toBeLessThanOrEqual(200 + '... [tronqué]'.length + 10);
     });
   });
+
+  describe('Cas de référence et script de calibration (TACHE D)', () => {
+    it('comporte exactement 8 cas de calibration (4 ok, 4 pas_encore)', () => {
+      expect(JUDGE_CASES).toHaveLength(8);
+
+      const okCases = JUDGE_CASES.filter((c) => c.expected === 'ok');
+      const pasEncoreCases = JUDGE_CASES.filter((c) => c.expected === 'pas_encore');
+
+      expect(okCases).toHaveLength(4);
+      expect(pasEncoreCases).toHaveLength(4);
+
+      // Verify the 4 "ok" cases descriptions
+      expect(okCases.some((c) => c.id.includes('stock'))).toBe(true);
+      expect(okCases.some((c) => c.id.includes('rupture') && c.id.includes('alternative'))).toBe(true);
+      expect(okCases.some((c) => c.id.includes('salutation'))).toBe(true);
+      expect(okCases.some((c) => c.id.includes('devis'))).toBe(true);
+
+      // Verify the 4 "pas_encore" cases descriptions
+      expect(pasEncoreCases.some((c) => c.id.includes('toutes_lettres'))).toBe(true);
+      expect(pasEncoreCases.some((c) => c.id.includes('rupture_sans_alternative'))).toBe(true);
+      expect(pasEncoreCases.some((c) => c.id.includes('promesse_delai'))).toBe(true);
+      expect(pasEncoreCases.some((c) => c.id.includes('fausse_confirmation'))).toBe(true);
+    });
+
+    it('parseCalibrationArgs gère les options --dry-run et --max-llm-calls', () => {
+      const defaultArgs = parseCalibrationArgs([]);
+      expect(defaultArgs.dryRun).toBe(false);
+      expect(defaultArgs.maxLlmCalls).toBe(12);
+
+      const customArgs = parseCalibrationArgs(['--dry-run', '--max-llm-calls', '20']);
+      expect(customArgs.dryRun).toBe(true);
+      expect(customArgs.maxLlmCalls).toBe(20);
+
+      const customArgsEq = parseCalibrationArgs(['--max-llm-calls=15']);
+      expect(customArgsEq.maxLlmCalls).toBe(15);
+    });
+  });
+
 });
