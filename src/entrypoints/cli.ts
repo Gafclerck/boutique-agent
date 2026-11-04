@@ -4,7 +4,12 @@ import { stdin as input, stdout as output } from 'node:process';
 import { ConsoleApproval } from '../adapters/approval/console-approval.js';
 import { RodiumClient } from '../adapters/llm/rodium-client.js';
 import { JsonFileStore } from '../adapters/store/json-file-store.js';
-import { evaluateReply } from '../agent/evaluation/index.js';
+import {
+  composeEvaluators,
+  createJudgeEvaluator,
+  evaluateReply,
+  type Evaluator,
+} from '../agent/evaluation/index.js';
 import { SYSTEM_INSTRUCTIONS } from '../agent/instructions.js';
 import { runAgent } from '../agent/loop.js';
 import { formatTrace } from '../agent/trace.js';
@@ -27,7 +32,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const evaluate = process.env.EVALUATION === 'off' ? undefined : evaluateReply;
+  let evaluate: Evaluator | undefined;
+  if (process.env.EVALUATION === 'off') {
+    evaluate = undefined;
+  } else if (process.env.JUDGE === 'on') {
+    const judgeModel = process.env.JUDGE_MODEL || process.env.RODIUM_MODEL;
+    const judgeLlm = new RodiumClient({
+      model: judgeModel,
+    });
+    const judge = createJudgeEvaluator({ llm: judgeLlm });
+    evaluate = composeEvaluators(evaluateReply, judge);
+  } else {
+    evaluate = evaluateReply;
+  }
   const args = process.argv.slice(2);
   const dataFilePath = process.env.SHOP_DATA_FILE ?? 'data/shop.json';
   let store = new JsonFileStore(dataFilePath);
