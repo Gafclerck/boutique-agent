@@ -1,6 +1,7 @@
 import { evaluateAlternativeEnRupture } from './rules/alternative-en-rupture.js';
 import { evaluateAncrageDesNombres } from './rules/ancrage-des-nombres.js';
 import { evaluateRechercheDabord } from './rules/recherche-dabord.js';
+import { evaluateReponseCourte } from './rules/reponse-courte.js';
 import { evaluateStockDabord } from './rules/stock-dabord.js';
 import type { EvaluationInput, Verdict, Violation } from './types.js';
 
@@ -9,6 +10,11 @@ export * from './utils.js';
 export { evaluateAlternativeEnRupture } from './rules/alternative-en-rupture.js';
 export { evaluateAncrageDesNombres } from './rules/ancrage-des-nombres.js';
 export { evaluateRechercheDabord } from './rules/recherche-dabord.js';
+export {
+  evaluateReponseCourte,
+  countWords,
+  MAX_REPLY_WORDS,
+} from './rules/reponse-courte.js';
 export { evaluateStockDabord } from './rules/stock-dabord.js';
 
 /**
@@ -34,6 +40,10 @@ export function evaluateReply(input: EvaluationInput): Verdict {
   // Rule 4: ancrageDesNombres
   const v4 = evaluateAncrageDesNombres(input);
   if (v4) violations.push(v4);
+
+  // Rule 5: reponseCourte
+  const v5 = evaluateReponseCourte(input);
+  if (v5) violations.push(v5);
 
   return {
     ok: violations.length === 0,
