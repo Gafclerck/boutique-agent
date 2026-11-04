@@ -22,8 +22,9 @@ export function evaluateAncrageDesNombres(
 
   // 2. Extract numbers from user message (quantities, budgets, etc.)
   const userNumbers = extractNumbersFromValue(input.userMessage);
+  const historyNumbers = input.historyGrounding?.numbers ?? [];
 
-  const numericMatches = (val: number, list: number[]): boolean => {
+  const numericMatches = (val: number, list: readonly number[]): boolean => {
     return list.some((item) => Math.abs(item - val) <= 0.005);
   };
 
@@ -32,14 +33,17 @@ export function evaluateAncrageDesNombres(
   for (const item of replyNumbers) {
     if (item.isMonetary) {
       // Monetary numbers: ONLY authorized if present in tool results
-      if (!numericMatches(item.value, toolNumbers)) {
+      const inTools = numericMatches(item.value, toolNumbers);
+      const inHistory = numericMatches(item.value, historyNumbers);
+      if (!inTools && !inHistory) {
         unauthorized.push(item.rawText);
       }
     } else {
       // Non-monetary numbers: authorized if present in tool results OR user message
       const inTools = numericMatches(item.value, toolNumbers);
       const inUser = numericMatches(item.value, userNumbers);
-      if (!inTools && !inUser) {
+      const inHistory = numericMatches(item.value, historyNumbers);
+      if (!inTools && !inUser && !inHistory) {
         unauthorized.push(item.rawText);
       }
     }

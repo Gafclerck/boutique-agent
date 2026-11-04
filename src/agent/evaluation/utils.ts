@@ -244,3 +244,63 @@ export function hasPriorCatalogueLookup(
 }
 
 export const detectPriorCatalogueLookup = hasPriorCatalogueLookup;
+
+/**
+ * Pure function: extracts authorized grounding numbers from conversation history.
+ * Sources:
+ * 1. Final assistant messages without tool_calls (already accepted responses).
+ * 2. Tool observation results (role: 'tool'), excluding unstructured "demander_au_*" tools.
+ * Never extracts from user messages.
+ */
+export function collectHistoryGrounding(
+  history?: readonly ChatMessage[],
+): { numbers: number[] } {
+  if (!history || history.length === 0) {
+    return { numbers: [] };
+  }
+
+  const toolNameById = new Map<string, string>();
+  for (const message of history) {
+    if (message.role === 'assistant' && message.tool_calls) {
+      for (const call of message.tool_calls) {
+        if (call.id && call.function?.name) {
+          toolNameById.set(call.id, call.function.name);
+        }
+      }
+    }
+  }
+
+  const numbers: number[] = [];
+
+  for (const message of history) {
+    if (message.role === 'assistant') {
+      // (1) Final assistant messages only (no tool calls)
+      if (!message.tool_calls || message.tool_calls.length === 0) {
+        if (message.content) {
+          numbers.push(...extractNumbersFromValue(message.content));
+        }
+      }
+    } else if (message.role === 'tool') {
+      // (2) Tool results, excluding demander_au_*
+      const toolName = message.tool_call_id
+        ? toolNameById.get(message.tool_call_id)
+        : undefined;
+
+      if (toolName && toolName.startsWith('demander_au_')) {
+        continue;
+      }
+
+      if (message.content) {
+        try {
+          const parsed = JSON.parse(message.content);
+          numbers.push(...extractNumbersFromValue(parsed));
+        } catch {
+          numbers.push(...extractNumbersFromValue(message.content));
+        }
+      }
+    }
+  }
+
+  const uniqueNumbers = Array.from(new Set(numbers));
+  return { numbers: uniqueNumbers };
+}

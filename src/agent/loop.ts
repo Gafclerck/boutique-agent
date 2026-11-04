@@ -11,9 +11,11 @@ import type {
 import type { ToolRegistry } from '../tools/registry.js';
 import {
   buildCritiqueMessage,
+  collectHistoryGrounding,
   hasPriorCatalogueLookup,
   type EvaluationInput,
   type Evaluator,
+  type HistoryGrounding,
 } from './evaluation/index.js';
 import { evaluateToolGuard } from './guards.js';
 import { BudgetExceededError } from './budget.js';
@@ -41,6 +43,7 @@ export interface RunAgentParams {
   readonly maxEvaluationRetries?: number;
   readonly catalogue?: readonly Product[];
   readonly role?: string;
+  readonly historyGrounding?: HistoryGrounding;
 }
 
 export interface AgentRunResult {
@@ -211,6 +214,8 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
   let llmCalls = 0;
   let evaluationRetries = 0;
   let lastViolations: string[] | undefined;
+  const historyGrounding =
+    params.historyGrounding ?? collectHistoryGrounding(params.history);
 
   let step = 1;
   try {
@@ -338,6 +343,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
         trace: traceEvents,
         catalogue,
         hasPriorCatalogueLookup: priorCatalogueLookup,
+        historyGrounding,
       };
 
       const verdict = await params.evaluate(evalInput);

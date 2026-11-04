@@ -1,5 +1,6 @@
 import { evaluateAlternativeEnRupture } from './rules/alternative-en-rupture.js';
 import { evaluateAncrageDesNombres } from './rules/ancrage-des-nombres.js';
+import { evaluateConversionSurMontantDeOutil } from './rules/conversion-sur-montant-de-outil.js';
 import { evaluateRechercheDabord } from './rules/recherche-dabord.js';
 import { evaluateReponseCourte } from './rules/reponse-courte.js';
 import { evaluateStockDabord } from './rules/stock-dabord.js';
@@ -11,6 +12,7 @@ export * from './judge-criteria.js';
 export * from './judge.js';
 export { evaluateAlternativeEnRupture } from './rules/alternative-en-rupture.js';
 export { evaluateAncrageDesNombres } from './rules/ancrage-des-nombres.js';
+export { evaluateConversionSurMontantDeOutil } from './rules/conversion-sur-montant-de-outil.js';
 export { evaluateRechercheDabord } from './rules/recherche-dabord.js';
 export {
   evaluateReponseCourte,
@@ -43,9 +45,13 @@ export function evaluateReply(input: EvaluationInput): Verdict {
   const v4 = evaluateAncrageDesNombres(input);
   if (v4) violations.push(v4);
 
-  // Rule 5: reponseCourte
-  const v5 = evaluateReponseCourte(input);
+  // Rule 5: conversionSurMontantDeOutil
+  const v5 = evaluateConversionSurMontantDeOutil(input);
   if (v5) violations.push(v5);
+
+  // Rule 6: reponseCourte
+  const v6 = evaluateReponseCourte(input);
+  if (v6) violations.push(v6);
 
   return {
     ok: violations.length === 0,

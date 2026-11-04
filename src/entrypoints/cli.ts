@@ -9,6 +9,7 @@ import {
   composeEvaluators,
   createJudgeEvaluator,
   evaluateReply,
+  collectHistoryGrounding,
   type Evaluator,
 } from '../agent/evaluation/index.js';
 import { SYSTEM_INSTRUCTIONS } from '../agent/instructions.js';
@@ -150,6 +151,7 @@ async function main(): Promise<void> {
           userMessage: trimmed,
           approval,
           evaluate,
+          historyGrounding: collectHistoryGrounding(history),
         });
 
         console.log('\n--- Trace d\'exécution ---');
