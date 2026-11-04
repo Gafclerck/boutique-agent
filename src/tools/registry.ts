@@ -11,6 +11,14 @@ import { VerifierStockTool } from './verifier-stock.js';
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
 
+  constructor(tools?: readonly Tool[]) {
+    if (tools) {
+      for (const tool of tools) {
+        this.register(tool);
+      }
+    }
+  }
+
   public register(tool: Tool): void {
     this.tools.set(tool.name, tool);
   }
@@ -26,6 +34,10 @@ export class ToolRegistry {
   public getDefinitions(): readonly ToolDefinition[] {
     return this.getAll().map((tool) => tool.toDefinition());
   }
+}
+
+export function createRegistry(tools: readonly Tool[] = []): ToolRegistry {
+  return new ToolRegistry(tools);
 }
 
 export function createDefaultRegistry(
