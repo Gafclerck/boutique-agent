@@ -31,6 +31,13 @@ export interface ApprovalTraceEvent extends BaseTraceEvent {
   readonly reason?: string;
 }
 
+export interface OrderSubmittedTraceEvent extends BaseTraceEvent {
+  readonly type: 'order_submitted';
+  readonly step: number;
+  readonly numero: number;
+  readonly cancelledNumbers: readonly number[];
+}
+
 export interface EvaluationTraceEvent extends BaseTraceEvent {
   readonly type: 'evaluation';
   readonly step: number;
@@ -79,6 +86,7 @@ export type TraceEvent =
   | LlmCallTraceEvent
   | ToolCallTraceEvent
   | ApprovalTraceEvent
+  | OrderSubmittedTraceEvent
   | EvaluationTraceEvent
   | RetryTraceEvent
   | StopTraceEvent
@@ -109,6 +117,17 @@ export function formatTrace(events: readonly TraceEvent[]): string {
         const reasonText = event.reason ? ` (${event.reason})` : '';
         lines.push(
           `${prefix}[Étape ${event.step}] Approbation (${event.tool}) : ${decisionText}${reasonText}`,
+        );
+        break;
+      }
+
+      case 'order_submitted': {
+        const cancelledInfo =
+          event.cancelledNumbers.length > 0
+            ? ` (anciennes commandes annulées : ${event.cancelledNumbers.join(', ')})`
+            : '';
+        lines.push(
+          `${prefix}[Étape ${event.step}] Commande #${event.numero} soumise pour validation${cancelledInfo}`,
         );
         break;
       }

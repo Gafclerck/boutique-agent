@@ -1,5 +1,6 @@
 import { evaluateAlternativeEnRupture } from './rules/alternative-en-rupture.js';
 import { evaluateAncrageDesNombres } from './rules/ancrage-des-nombres.js';
+import { evaluateCommandeEnAttente } from './rules/commande-en-attente.js';
 import { evaluateConversionSurMontantDeOutil } from './rules/conversion-sur-montant-de-outil.js';
 import { evaluateRechercheDabord } from './rules/recherche-dabord.js';
 import { evaluateReponseCourte } from './rules/reponse-courte.js';
@@ -12,6 +13,7 @@ export * from './judge-criteria.js';
 export * from './judge.js';
 export { evaluateAlternativeEnRupture } from './rules/alternative-en-rupture.js';
 export { evaluateAncrageDesNombres } from './rules/ancrage-des-nombres.js';
+export { evaluateCommandeEnAttente } from './rules/commande-en-attente.js';
 export { evaluateConversionSurMontantDeOutil } from './rules/conversion-sur-montant-de-outil.js';
 export { evaluateRechercheDabord } from './rules/recherche-dabord.js';
 export {
@@ -52,6 +54,10 @@ export function evaluateReply(input: EvaluationInput): Verdict {
   // Rule 6: reponseCourte
   const v6 = evaluateReponseCourte(input);
   if (v6) violations.push(v6);
+
+  // Rule 7: commandeEnAttente
+  const v7 = evaluateCommandeEnAttente(input);
+  if (v7) violations.push(v7);
 
   return {
     ok: violations.length === 0,

@@ -7,7 +7,7 @@ import type {
 import type { ToolDefinition } from '../ports/llm-client.js';
 import type { Tool, ToolApprovalPreparation } from './types.js';
 
-function formatFailure(result: OrderFailureReason): Record<string, unknown> {
+export function formatOrderFailure(result: OrderFailureReason): Record<string, unknown> {
   switch (result.reason) {
     case 'UNSERVICED_ZONE':
       return {
@@ -55,6 +55,86 @@ function formatRecapitulatif(preview: OrderPreview): string {
   ].join('\n');
 }
 
+export function parseOrderArguments(
+  args: unknown,
+):
+  | { readonly success: true; readonly params: OrderInput }
+  | { readonly success: false; readonly error: Record<string, unknown> } {
+  if (
+    typeof args !== 'object' ||
+    args === null ||
+    !('client_nom' in args) ||
+    !('zone' in args) ||
+    !('articles' in args)
+  ) {
+    return {
+      success: false,
+      error: {
+        erreur: 'argument invalide',
+        conseil:
+          'fournir client_nom, zone et articles sous la forme {"client_nom": "...", "zone": "...", "articles": [{"ref": "P01", "quantite": 1}]}',
+      },
+    };
+  }
+
+  const { client_nom, zone, articles } = args as {
+    client_nom: unknown;
+    zone: unknown;
+    articles: unknown;
+  };
+
+  if (
+    typeof client_nom !== 'string' ||
+    client_nom.trim().length === 0 ||
+    typeof zone !== 'string' ||
+    zone.trim().length === 0 ||
+    !Array.isArray(articles) ||
+    articles.length === 0
+  ) {
+    return {
+      success: false,
+      error: {
+        erreur: 'argument invalide',
+        conseil:
+          'vérifier que client_nom et zone sont des chaînes non vides et que articles contient au moins un élément',
+      },
+    };
+  }
+
+  const parsedArticles: Array<{ ref: string; quantite: number }> = [];
+  for (const item of articles) {
+    if (
+      typeof item !== 'object' ||
+      item === null ||
+      typeof (item as { ref?: unknown }).ref !== 'string' ||
+      typeof (item as { quantite?: unknown }).quantite !== 'number'
+    ) {
+      return {
+        success: false,
+        error: {
+          erreur: 'argument invalide',
+          conseil:
+            'chaque article doit avoir une référence (ref) et une quantité entière positive (quantite)',
+        },
+      };
+    }
+    parsedArticles.push({
+      ref: (item as { ref: string }).ref,
+      quantite: (item as { quantite: number }).quantite,
+    });
+  }
+
+  return {
+    success: true,
+    params: {
+      clientNom: client_nom,
+      client_nom: client_nom,
+      zone,
+      articles: parsedArticles,
+    },
+  };
+}
+
 export class CreerCommandeTool implements Tool {
   public readonly name = 'creer_commande';
   public readonly description =
@@ -97,82 +177,12 @@ export class CreerCommandeTool implements Tool {
 
   constructor(private readonly shop: Shop) {}
 
-  private parseArguments(args: unknown):
-    | { readonly success: true; readonly params: OrderInput }
-    | { readonly success: false; readonly error: Record<string, unknown> } {
-    if (
-      typeof args !== 'object' ||
-      args === null ||
-      !('client_nom' in args) ||
-      !('zone' in args) ||
-      !('articles' in args)
-    ) {
-      return {
-        success: false,
-        error: {
-          erreur: 'argument invalide',
-          conseil:
-            'fournir client_nom, zone et articles sous la forme {"client_nom": "...", "zone": "...", "articles": [{"ref": "P01", "quantite": 1}]}',
-        },
-      };
-    }
+  public getShop(): Shop {
+    return this.shop;
+  }
 
-    const { client_nom, zone, articles } = args as {
-      client_nom: unknown;
-      zone: unknown;
-      articles: unknown;
-    };
-
-    if (
-      typeof client_nom !== 'string' ||
-      client_nom.trim().length === 0 ||
-      typeof zone !== 'string' ||
-      zone.trim().length === 0 ||
-      !Array.isArray(articles) ||
-      articles.length === 0
-    ) {
-      return {
-        success: false,
-        error: {
-          erreur: 'argument invalide',
-          conseil:
-            'vérifier que client_nom et zone sont des chaînes non vides et que articles contient au moins un élément',
-        },
-      };
-    }
-
-    const parsedArticles: Array<{ ref: string; quantite: number }> = [];
-    for (const item of articles) {
-      if (
-        typeof item !== 'object' ||
-        item === null ||
-        typeof (item as { ref?: unknown }).ref !== 'string' ||
-        typeof (item as { quantite?: unknown }).quantite !== 'number'
-      ) {
-        return {
-          success: false,
-          error: {
-            erreur: 'argument invalide',
-            conseil:
-              'chaque article doit avoir une référence (ref) et une quantité entière positive (quantite)',
-          },
-        };
-      }
-      parsedArticles.push({
-        ref: (item as { ref: string }).ref,
-        quantite: (item as { quantite: number }).quantite,
-      });
-    }
-
-    return {
-      success: true,
-      params: {
-        clientNom: client_nom,
-        client_nom: client_nom,
-        zone,
-        articles: parsedArticles,
-      },
-    };
+  public parseArguments(args: unknown) {
+    return parseOrderArguments(args);
   }
 
   public async prepareApproval(
@@ -187,7 +197,7 @@ export class CreerCommandeTool implements Tool {
     if (!previewResult.success) {
       return {
         valid: false,
-        errorResult: formatFailure(previewResult),
+        errorResult: formatOrderFailure(previewResult),
       };
     }
 
@@ -217,7 +227,7 @@ export class CreerCommandeTool implements Tool {
 
     const result = await this.shop.placeOrder(parsed.params);
     if (!result.success) {
-      return formatFailure(result);
+      return formatOrderFailure(result);
     }
 
     const order = result.order;

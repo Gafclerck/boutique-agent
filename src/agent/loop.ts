@@ -9,6 +9,14 @@ import type {
   ToolDefinition,
 } from '../ports/llm-client.js';
 import type { ToolRegistry } from '../tools/registry.js';
+import type { Shop } from '../domain/shop.js';
+import { formatOrderFailure } from '../tools/creer-commande.js';
+import { checkAsyncOrderGuard } from './async-order-guard.js';
+import type {
+  ConversationContext,
+  QuoteSnapshot,
+  SubmittedOrderInfo,
+} from './conversation-context.js';
 import {
   buildCritiqueMessage,
   collectHistoryGrounding,
@@ -21,6 +29,7 @@ import { evaluateToolGuard } from './guards.js';
 import { BudgetExceededError } from './budget.js';
 import type {
   ApprovalTraceEvent,
+  OrderSubmittedTraceEvent,
   ToolCallTraceEvent,
   TraceEvent,
 } from './trace.js';
@@ -29,6 +38,12 @@ export {
   hasPriorCatalogueLookup,
   type Evaluator,
 } from './evaluation/index.js';
+
+export {
+  type ConversationContext,
+  type QuoteSnapshot,
+  type SubmittedOrderInfo,
+} from './conversation-context.js';
 
 export interface RunAgentParams {
   readonly llm: LlmClient;
@@ -45,6 +60,9 @@ export interface RunAgentParams {
   readonly role?: string;
   readonly historyGrounding?: HistoryGrounding;
   readonly priorToolNames?: ReadonlySet<string>;
+  readonly conversation?: ConversationContext;
+  readonly orderStrategy?: 'console' | 'async';
+  readonly shop?: Shop;
 }
 
 export interface AgentRunResult {
@@ -64,6 +82,8 @@ export interface AgentRunResult {
   readonly lastViolations?: readonly string[];
   readonly durationMs: number;
   readonly toolNames: string[];
+  readonly conversation?: ConversationContext;
+  readonly submittedOrders?: readonly SubmittedOrderInfo[];
 }
 
 export const FALLBACK_MAX_STEPS_MESSAGE =
@@ -101,10 +121,16 @@ export async function executeSingleToolCall(
   step: number,
   approval?: ApprovalPort,
   role: string = 'agent',
+  context?: {
+    orderStrategy?: 'console' | 'async';
+    conversation?: ConversationContext;
+    shop?: Shop;
+  },
 ): Promise<{
   result: Record<string, unknown>;
   event: ToolCallTraceEvent;
   approvalEvent?: ApprovalTraceEvent;
+  orderSubmittedEvent?: OrderSubmittedTraceEvent;
   nested?: {
     traceEvents: TraceEvent[];
     llmCalls: number;
@@ -116,6 +142,7 @@ export async function executeSingleToolCall(
   let callArguments: unknown = toolCall.function.arguments;
   let result: Record<string, unknown>;
   let approvalEvent: ApprovalTraceEvent | undefined;
+  let orderSubmittedEvent: OrderSubmittedTraceEvent | undefined;
   let nested:
     | {
         traceEvents: TraceEvent[];
@@ -137,8 +164,63 @@ export async function executeSingleToolCall(
         erreur: `outil inconnu "${toolCall.function.name}"`,
         conseil: 'utiliser uniquement les outils déclarés',
       };
+    } else if (
+      toolCall.function.name === 'creer_commande' &&
+      context?.orderStrategy === 'async'
+    ) {
+      const shop =
+        context.shop ??
+        (typeof (tool as unknown as { getShop?: () => Shop }).getShop ===
+        'function'
+          ? (tool as unknown as { getShop: () => Shop }).getShop()
+          : (tool as unknown as { shop: Shop }).shop);
+
+      const guardCheck = checkAsyncOrderGuard(
+        parsedArgs,
+        context.conversation,
+        shop,
+      );
+
+      if (!guardCheck.canExecute) {
+        result = guardCheck.directResult;
+      } else {
+        const clientNom =
+          guardCheck.params.clientNom ?? guardCheck.params.client_nom ?? '';
+        const submitRes = await shop.submitOrderForApproval({
+          chatId: context.conversation?.chatId ?? '',
+          clientNom,
+          client_nom: clientNom,
+          zone: guardCheck.params.zone,
+          articles: guardCheck.params.articles,
+        });
+
+        if (!submitRes.success) {
+          result = formatOrderFailure(submitRes);
+        } else {
+          result = {
+            statut: 'en_attente_de_validation',
+            numero_commande: submitRes.numero,
+            commandes_annulees: [...submitRes.cancelledNumbers],
+            conseil:
+              "informer le client que sa commande est transmise à la boutique pour validation et qu'il sera prévenu du résultat ; ne jamais annoncer qu'elle est confirmée",
+          };
+          orderSubmittedEvent = {
+            type: 'order_submitted',
+            step,
+            agent: role,
+            numero: submitRes.numero,
+            cancelledNumbers: [...submitRes.cancelledNumbers],
+          };
+        }
+      }
     } else {
-      const guard = await evaluateToolGuard(tool, parsedArgs, step, approval, role);
+      const guard = await evaluateToolGuard(
+        tool,
+        parsedArgs,
+        step,
+        approval,
+        role,
+      );
       approvalEvent = guard.approvalEvent;
 
       if (!guard.canExecute) {
@@ -186,6 +268,7 @@ export async function executeSingleToolCall(
       durationMs,
     },
     approvalEvent,
+    orderSubmittedEvent,
     nested,
   };
 }
@@ -205,6 +288,11 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       ? params.priorToolNames.has('chercher_produits')
       : hasPriorCatalogueLookup(params.history);
 
+  // If conversation context is provided, update client message if not explicitly set
+  if (params.conversation && params.conversation.lastClientMessage === undefined) {
+    params.conversation.lastClientMessage = params.userMessage;
+  }
+
   const messages: ChatMessage[] = [
     { role: 'system', content: params.instructions },
     ...(params.history ?? []),
@@ -216,6 +304,7 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
 
   const traceEvents: TraceEvent[] = [];
   const toolNames: string[] = [];
+  const submittedOrders: SubmittedOrderInfo[] = [];
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let totalTokens = 0;
@@ -228,192 +317,134 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
   let step = 1;
   try {
     for (; step <= boundedMaxSteps; step++) {
-    const response = await callModel(
-      params.llm,
-      messages,
-      toolDefinitions,
-      params.maxTokens,
-      role,
-    );
+      const response = await callModel(
+        params.llm,
+        messages,
+        toolDefinitions,
+        params.maxTokens,
+        role,
+      );
 
-    llmCalls++;
-    totalPromptTokens += response.usage.promptTokens;
-    totalCompletionTokens += response.usage.completionTokens;
-    const stepTokens = computeTotalTokens(response.usage);
-    totalTokens += stepTokens;
+      llmCalls++;
+      totalPromptTokens += response.usage.promptTokens;
+      totalCompletionTokens += response.usage.completionTokens;
+      const stepTokens = computeTotalTokens(response.usage);
+      totalTokens += stepTokens;
 
-    traceEvents.push({
-      type: 'llm_call',
-      step,
-      agent: role,
-      promptTokens: response.usage.promptTokens,
-      completionTokens: response.usage.completionTokens,
-      totalTokens: stepTokens,
-      model: response.model,
-    });
-
-    const toolCalls = response.message.tool_calls;
-    if (toolCalls && toolCalls.length > 0) {
-      messages.push({
-        role: 'assistant',
-        content: response.message.content,
-        tool_calls: toolCalls,
+      traceEvents.push({
+        type: 'llm_call',
+        step,
+        agent: role,
+        promptTokens: response.usage.promptTokens,
+        completionTokens: response.usage.completionTokens,
+        totalTokens: stepTokens,
+        model: response.model,
       });
 
-      for (const toolCall of toolCalls) {
-        const { result, event, approvalEvent, nested } = await executeSingleToolCall(
-          params.tools,
-          toolCall,
-          step,
-          params.approval,
-          role,
-        );
-        if (approvalEvent) {
-          traceEvents.push(approvalEvent);
-        }
-        traceEvents.push(event);
-
-        toolNames.push(toolCall.function.name);
-        if (nested?.toolNames) {
-          toolNames.push(...nested.toolNames);
-        }
-
-        if (nested) {
-          if (nested.traceEvents && nested.traceEvents.length > 0) {
-            const taggedNestedEvents = nested.traceEvents.map((e) => ({
-              ...e,
-              nested: true,
-            }));
-            traceEvents.push(...taggedNestedEvents);
-          }
-          if (nested.llmCalls) {
-            llmCalls += nested.llmCalls;
-          }
-          if (nested.usage) {
-            totalPromptTokens += nested.usage.promptTokens;
-            totalCompletionTokens += nested.usage.completionTokens;
-            totalTokens += computeTotalTokens(nested.usage);
-          }
-        }
-
+      const toolCalls = response.message.tool_calls;
+      if (toolCalls && toolCalls.length > 0) {
         messages.push({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          content: JSON.stringify(result),
+          role: 'assistant',
+          content: response.message.content,
+          tool_calls: toolCalls,
         });
-      }
-      // Re-loop to send tool observations back to the LLM
-      continue;
-    }
 
-    // No tool calls: final text answer
-    const rawReply = response.message.content ?? '';
-    const isEmpty = rawReply.trim().length === 0;
-
-    if (isEmpty) {
-      // Empty reply fallback: no evaluation
-      const finalReply = FALLBACK_EMPTY_REPLY_MESSAGE;
-      const stopReason = 'empty_reply';
-
-      const finalMessages = messages.filter((m) => !retryMessages.has(m));
-      finalMessages.push({
-        role: 'assistant',
-        content: finalReply,
-      });
-
-      traceEvents.push({
-        type: 'stop',
-        step,
-        agent: role,
-        reason: stopReason,
-        totalLlmCalls: llmCalls,
-        totalTokens,
-      });
-
-      return {
-        reply: finalReply,
-        stopReason,
-        steps: step,
-        llmCalls,
-        usage: {
-          promptTokens: totalPromptTokens,
-          completionTokens: totalCompletionTokens,
-          totalTokens,
-        },
-        trace: traceEvents,
-        messages: finalMessages,
-        evaluationRetries,
-        lastViolations,
-        durationMs: Date.now() - runStartTime,
-        toolNames,
-      };
-    }
-
-    // Non-empty reply: evaluate if evaluator provided
-    if (params.evaluate) {
-      const evalInput: EvaluationInput = {
-        userMessage: params.userMessage,
-        reply: rawReply,
-        trace: traceEvents,
-        catalogue,
-        hasPriorCatalogueLookup: priorCatalogueLookup,
-        historyGrounding,
-      };
-
-      const verdict = await params.evaluate(evalInput);
-
-      if (verdict.llmCalls) {
-        llmCalls += verdict.llmCalls;
-      }
-      if (verdict.usage) {
-        totalPromptTokens += verdict.usage.promptTokens;
-        totalCompletionTokens += verdict.usage.completionTokens;
-        totalTokens += computeTotalTokens(verdict.usage);
-      }
-      if (verdict.traceEvents && verdict.traceEvents.length > 0) {
-        traceEvents.push(...verdict.traceEvents);
-      }
-
-      traceEvents.push({
-        type: 'evaluation',
-        step,
-        agent: role,
-        ok: verdict.ok,
-        violations: verdict.violations.map((v) => v.rule),
-        retryNumber: evaluationRetries,
-      });
-
-      if (!verdict.ok) {
-        lastViolations = verdict.violations.map((v) => v.rule);
-
-        if (evaluationRetries < maxEvaluationRetries) {
-          evaluationRetries++;
-          traceEvents.push({
-            type: 'retry',
+        for (const toolCall of toolCalls) {
+          const {
+            result,
+            event,
+            approvalEvent,
+            orderSubmittedEvent,
+            nested,
+          } = await executeSingleToolCall(
+            params.tools,
+            toolCall,
             step,
-            agent: role,
-            retryNumber: evaluationRetries,
+            params.approval,
+            role,
+            {
+              orderStrategy: params.orderStrategy,
+              conversation: params.conversation,
+              shop: params.shop,
+            },
+          );
+
+          if (approvalEvent) {
+            traceEvents.push(approvalEvent);
+          }
+          if (orderSubmittedEvent) {
+            traceEvents.push(orderSubmittedEvent);
+            submittedOrders.push({
+              numero: orderSubmittedEvent.numero,
+              cancelledNumbers: [...orderSubmittedEvent.cancelledNumbers],
+            });
+          }
+          traceEvents.push(event);
+
+          toolNames.push(toolCall.function.name);
+          if (nested?.toolNames) {
+            toolNames.push(...nested.toolNames);
+          }
+
+          if (nested) {
+            if (nested.traceEvents && nested.traceEvents.length > 0) {
+              const taggedNestedEvents = nested.traceEvents.map((e) => ({
+                ...e,
+                nested: true,
+              }));
+              traceEvents.push(...taggedNestedEvents);
+            }
+            if (nested.llmCalls) {
+              llmCalls += nested.llmCalls;
+            }
+            if (nested.usage) {
+              totalPromptTokens += nested.usage.promptTokens;
+              totalCompletionTokens += nested.usage.completionTokens;
+              totalTokens += computeTotalTokens(nested.usage);
+            }
+          }
+
+          // Update quote snapshot after successful calculer_total
+          if (
+            toolCall.function.name === 'calculer_total' &&
+            params.conversation &&
+            result &&
+            !result.erreur &&
+            typeof result.total_fcfa === 'number' &&
+            typeof result.zone === 'string' &&
+            Array.isArray(result.articles)
+          ) {
+            params.conversation.lastQuote = {
+              zone: result.zone as string,
+              lignes: (
+                result.articles as Array<{ ref: string; quantite: number }>
+              ).map((a) => ({
+                ref: a.ref,
+                quantite: a.quantite,
+              })),
+              total_fcfa: result.total_fcfa as number,
+              turnId: params.conversation.turnId,
+            };
+          }
+
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(result),
           });
-
-          const draftMessage: ChatMessage = {
-            role: 'assistant',
-            content: rawReply,
-          };
-          const critiqueMessage: ChatMessage = {
-            role: 'user',
-            content: buildCritiqueMessage(verdict.violations),
-          };
-
-          retryMessages.add(draftMessage);
-          retryMessages.add(critiqueMessage);
-
-          messages.push(draftMessage, critiqueMessage);
-          continue;
         }
+        // Re-loop to send tool observations back to the LLM
+        continue;
+      }
 
-        // No more retries: fallback
-        const finalReply = EVALUATION_FALLBACK_MESSAGE;
-        const stopReason = 'evaluation_failed';
+      // No tool calls: final text answer
+      const rawReply = response.message.content ?? '';
+      const isEmpty = rawReply.trim().length === 0;
+
+      if (isEmpty) {
+        // Empty reply fallback: no evaluation
+        const finalReply = FALLBACK_EMPTY_REPLY_MESSAGE;
+        const stopReason = 'empty_reply';
 
         const finalMessages = messages.filter((m) => !retryMessages.has(m));
         finalMessages.push({
@@ -446,14 +477,156 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
           lastViolations,
           durationMs: Date.now() - runStartTime,
           toolNames,
+          conversation: params.conversation,
+          submittedOrders,
         };
       }
+
+      // Non-empty reply: evaluate if evaluator provided
+      if (params.evaluate) {
+        const evalInput: EvaluationInput = {
+          userMessage: params.userMessage,
+          reply: rawReply,
+          trace: traceEvents,
+          catalogue,
+          hasPriorCatalogueLookup: priorCatalogueLookup,
+          historyGrounding,
+        };
+
+        const verdict = await params.evaluate(evalInput);
+
+        if (verdict.llmCalls) {
+          llmCalls += verdict.llmCalls;
+        }
+        if (verdict.usage) {
+          totalPromptTokens += verdict.usage.promptTokens;
+          totalCompletionTokens += verdict.usage.completionTokens;
+          totalTokens += computeTotalTokens(verdict.usage);
+        }
+        if (verdict.traceEvents && verdict.traceEvents.length > 0) {
+          traceEvents.push(...verdict.traceEvents);
+        }
+
+        traceEvents.push({
+          type: 'evaluation',
+          step,
+          agent: role,
+          ok: verdict.ok,
+          violations: verdict.violations.map((v) => v.rule),
+          retryNumber: evaluationRetries,
+        });
+
+        if (!verdict.ok) {
+          lastViolations = verdict.violations.map((v) => v.rule);
+
+          if (evaluationRetries < maxEvaluationRetries) {
+            evaluationRetries++;
+            traceEvents.push({
+              type: 'retry',
+              step,
+              agent: role,
+              retryNumber: evaluationRetries,
+            });
+
+            const draftMessage: ChatMessage = {
+              role: 'assistant',
+              content: rawReply,
+            };
+            const critiqueMessage: ChatMessage = {
+              role: 'user',
+              content: buildCritiqueMessage(verdict.violations),
+            };
+
+            retryMessages.add(draftMessage);
+            retryMessages.add(critiqueMessage);
+
+            messages.push(draftMessage, critiqueMessage);
+            continue;
+          }
+
+          // No more retries: fallback
+          const finalReply = EVALUATION_FALLBACK_MESSAGE;
+          const stopReason = 'evaluation_failed';
+
+          const finalMessages = messages.filter((m) => !retryMessages.has(m));
+          finalMessages.push({
+            role: 'assistant',
+            content: finalReply,
+          });
+
+          traceEvents.push({
+            type: 'stop',
+            step,
+            agent: role,
+            reason: stopReason,
+            totalLlmCalls: llmCalls,
+            totalTokens,
+          });
+
+          return {
+            reply: finalReply,
+            stopReason,
+            steps: step,
+            llmCalls,
+            usage: {
+              promptTokens: totalPromptTokens,
+              completionTokens: totalCompletionTokens,
+              totalTokens,
+            },
+            trace: traceEvents,
+            messages: finalMessages,
+            evaluationRetries,
+            lastViolations,
+            durationMs: Date.now() - runStartTime,
+            toolNames,
+            conversation: params.conversation,
+            submittedOrders,
+          };
+        }
+      }
+
+      // Verdict ok or no evaluate provided: accepted
+      const finalReply = rawReply;
+      const stopReason = 'answered';
+
+      const finalMessages = messages.filter((m) => !retryMessages.has(m));
+      finalMessages.push({
+        role: 'assistant',
+        content: finalReply,
+      });
+
+      traceEvents.push({
+        type: 'stop',
+        step,
+        agent: role,
+        reason: stopReason,
+        totalLlmCalls: llmCalls,
+        totalTokens,
+      });
+
+      return {
+        reply: finalReply,
+        stopReason,
+        steps: step,
+        llmCalls,
+        usage: {
+          promptTokens: totalPromptTokens,
+          completionTokens: totalCompletionTokens,
+          totalTokens,
+        },
+        trace: traceEvents,
+        messages: finalMessages,
+        evaluationRetries,
+        lastViolations,
+        durationMs: Date.now() - runStartTime,
+        toolNames,
+        conversation: params.conversation,
+        submittedOrders,
+      };
     }
 
-    // Verdict ok or no evaluate provided: accepted
-    const finalReply = rawReply;
-    const stopReason = 'answered';
-
+    // Max steps reached
+    const finalReply = FALLBACK_MAX_STEPS_MESSAGE;
     const finalMessages = messages.filter((m) => !retryMessages.has(m));
     finalMessages.push({
       role: 'assistant',
@@ -462,17 +635,17 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
 
     traceEvents.push({
       type: 'stop',
-      step,
+      step: boundedMaxSteps,
       agent: role,
-      reason: stopReason,
+      reason: 'max_steps',
       totalLlmCalls: llmCalls,
       totalTokens,
     });
 
     return {
       reply: finalReply,
-      stopReason,
-      steps: step,
+      stopReason: 'max_steps',
+      steps: boundedMaxSteps,
       llmCalls,
       usage: {
         promptTokens: totalPromptTokens,
@@ -485,80 +658,48 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       lastViolations,
       durationMs: Date.now() - runStartTime,
       toolNames,
+      conversation: params.conversation,
+      submittedOrders,
     };
-  }
+  } catch (err) {
+    if (err instanceof BudgetExceededError) {
+      const finalReply = EVALUATION_FALLBACK_MESSAGE;
+      const finalMessages = messages.filter((m) => !retryMessages.has(m));
+      finalMessages.push({
+        role: 'assistant',
+        content: finalReply,
+      });
 
-  // Max steps reached
-  const finalReply = FALLBACK_MAX_STEPS_MESSAGE;
-  const finalMessages = messages.filter((m) => !retryMessages.has(m));
-  finalMessages.push({
-    role: 'assistant',
-    content: finalReply,
-  });
-
-  traceEvents.push({
-    type: 'stop',
-    step: boundedMaxSteps,
-    agent: role,
-    reason: 'max_steps',
-    totalLlmCalls: llmCalls,
-    totalTokens,
-  });
-
-  return {
-    reply: finalReply,
-    stopReason: 'max_steps',
-    steps: boundedMaxSteps,
-    llmCalls,
-    usage: {
-      promptTokens: totalPromptTokens,
-      completionTokens: totalCompletionTokens,
-      totalTokens,
-    },
-    trace: traceEvents,
-    messages: finalMessages,
-    evaluationRetries,
-    lastViolations,
-    durationMs: Date.now() - runStartTime,
-    toolNames,
-  };
-} catch (err) {
-  if (err instanceof BudgetExceededError) {
-    const finalReply = EVALUATION_FALLBACK_MESSAGE;
-    const finalMessages = messages.filter((m) => !retryMessages.has(m));
-    finalMessages.push({
-      role: 'assistant',
-      content: finalReply,
-    });
-
-    traceEvents.push({
-      type: 'stop',
-      step: Math.min(step, boundedMaxSteps),
-      agent: role,
-      reason: 'budget_exceeded',
-      totalLlmCalls: llmCalls,
-      totalTokens,
-    });
-
-    return {
-      reply: finalReply,
-      stopReason: 'budget_exceeded',
-      steps: Math.min(step, boundedMaxSteps),
-      llmCalls,
-      usage: {
-        promptTokens: totalPromptTokens,
-        completionTokens: totalCompletionTokens,
+      traceEvents.push({
+        type: 'stop',
+        step: Math.min(step, boundedMaxSteps),
+        agent: role,
+        reason: 'budget_exceeded',
+        totalLlmCalls: llmCalls,
         totalTokens,
-      },
-      trace: traceEvents,
-      messages: finalMessages,
-      evaluationRetries,
-      lastViolations,
-      durationMs: Date.now() - runStartTime,
-      toolNames,
-    };
-  }
+      });
 
-  throw err;
-}
+      return {
+        reply: finalReply,
+        stopReason: 'budget_exceeded',
+        steps: Math.min(step, boundedMaxSteps),
+        llmCalls,
+        usage: {
+          promptTokens: totalPromptTokens,
+          completionTokens: totalCompletionTokens,
+          totalTokens,
+        },
+        trace: traceEvents,
+        messages: finalMessages,
+        evaluationRetries,
+        lastViolations,
+        durationMs: Date.now() - runStartTime,
+        toolNames,
+        conversation: params.conversation,
+        submittedOrders,
+      };
+    }
+
+    throw err;
+  }
 }
