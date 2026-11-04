@@ -288,10 +288,9 @@ describe('Cycle de vie des commandes (order-lifecycle & Shop)', () => {
       });
 
       expect(sub3.success).toBe(true);
-      if (sub3.success) {
-        expect(sub3.numero).toBe(3);
-        expect(sub3.cancelledNumbers).toEqual([sub1.numero]);
-      }
+      if (!sub3.success) return;
+      expect(sub3.numero).toBe(3);
+      expect(sub3.cancelledNumbers).toEqual([sub1.numero]);
 
       const all = await shop.getOrders();
       const c1 = all.find((o) => o.numero === sub1.numero);
